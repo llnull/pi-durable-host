@@ -15,11 +15,12 @@
 // Every command holds a single-writer lock on the storage (data/host.lock) for its
 // lifetime: pi-durable storage has no cross-process locking. Run `serve` to keep
 // one long-lived owner and attach everything else to it over HTTP.
+// Model backends are multi-host: lib/models.js reads this machine's pi config
+// (~/.pi/agent) when present, or the Ark relay when its token is set. See the
+// header of lib/models.js for PI_DURABLE_PROVIDER / PI_DURABLE_MODEL.
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { createModels, createProvider, envApiKeyAuth } from "@earendil-works/pi-ai";
-import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messages.lazy";
 import { AssistantEntry, ToolResultEntry, createRegistry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
@@ -29,6 +30,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { acquireLock, releaseLock } from "./lib/lock.js";
 import { buildGuard, buildProjectContext, SubagentExtension } from "./lib/extensions.js";
+import { openModelLayer } from "./lib/models.js";
 import { startServer } from "./lib/server.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -39,36 +41,11 @@ const APPROVALS_FILE = path.join(DATA_DIR, "approvals.json");
 const TIMING_LOG = path.join(DATA_DIR, "tool-timing.log");
 const WORKSPACE = path.join(HERE, "workspace");
 
-const RELAY_BASE_URL = process.env.ARK_BASE_URL ?? "http://192.168.210.107:3000/api";
-const MODEL = { provider: "ark", modelId: "ark-code-latest" };
+const MODEL_LAYER = openModelLayer();
+const MODEL = MODEL_LAYER.model;
 
 function buildModels() {
-	const models = createModels();
-	const provider = createProvider({
-		id: "ark",
-		name: "Ark Code relay",
-		auth: {
-			apiKey: envApiKeyAuth("Ark relay token", ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"]),
-		},
-		baseUrl: RELAY_BASE_URL,
-		models: [
-			{
-				id: "ark-code-latest",
-				name: "Ark Code (relay)",
-				api: "anthropic-messages",
-				provider: "ark",
-				baseUrl: RELAY_BASE_URL,
-				reasoning: true,
-				input: ["text"],
-				contextWindow: 200000,
-				maxTokens: 65536,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-			},
-		],
-		api: anthropicMessagesApi(),
-	});
-	models.setProvider(provider);
-	return models;
+	return MODEL_LAYER.models;
 }
 
 function buildRegistry() {
@@ -243,6 +220,7 @@ async function cmdConfig() {
 		const agent = await root.agent(context);
 		console.log("cwd:", agent.cwd);
 		console.log("model:", agent.model?.provider + "/" + (agent.model?.modelId ?? agent.model?.id ?? "?"));
+		console.log("model source:", MODEL_LAYER.source);
 		console.log("extensions:", (agent.extensions ?? []).map((e) => e.name).join(", "));
 	} finally {
 		await harness.close(context);
@@ -271,6 +249,7 @@ async function cmdStatus() {
 		const inbox = v.docs?.["pi.inbox"]?.items ?? [];
 		const agent = await root.agent(context);
 		console.log("conversation:", String(root.id));
+		console.log("model source:", MODEL_LAYER.source);
 		console.log("busy:", busy ? `yes (run task ${live.run.taskId}, inputs: ${live.run.inputs.join(", ")})` : "no");
 		if (busy && live.generation) {
 			console.log("generation:", `attempt ${live.generation.attempt}${live.generation.retry ? ` · retrying: ${live.generation.retry.error}` : ""}`);

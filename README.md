@@ -1,11 +1,13 @@
 # Pi Durable 本机部署
 
 `@earendil-works/pi-durable`（实验性，API 随版本变动）的本地 host：持久化会话跑在 SQLite 上，
-模型走 Ark relay（anthropic-messages 协议），工具为 CodingTools（read / write / edit / bash），
+模型后端多主机自适应（本机 pi 配置 → zai GLM 直连，openai-completions；或 Ark relay，anthropic-messages），
+工具为 CodingTools（read / write / edit / bash），
 外加 host 自建扩展（项目上下文 / 危险命令守卫 / 子代理）。
 
-位置：`/mnt/d/ws/project/wsl-ws/ai/vibe-ws/pi-durable/`（Windows 盘 drvfs，SQLite WAL 已实测可用；
-性能比 ext4 慢，重负载可考虑把 `data/` 挪回 ext4）
+位置：macOS `/Users/llnull/Workspace/vibe-ws/pi-durable-host`、
+WSL `/mnt/d/ws/project/wsl-ws/ai/vibe-ws/pi-durable/`（同一仓库多机 clone；WSL 侧为 Windows 盘 drvfs，
+SQLite WAL 已实测可用，性能比 ext4 慢，重负载可考虑把 `data/` 挪回 ext4）
 
 分析报告见 `pi-durable-report.html`（能力、目的与本地实现的完整分析）。
 
@@ -26,12 +28,24 @@
 
 ## 依赖
 
-- Node >= 22.19（本机 v24.13.0；node:sqlite 有 ExperimentalWarning，可忽略）
-- `@earendil-works/pi-durable` + `@earendil-works/pi-ai` + `@earendil-works/chord`（npm 已装）
-- 环境变量 `ANTHROPIC_AUTH_TOKEN`（或 `ANTHROPIC_API_KEY`）——relay 令牌
-- 可选 `ARK_BASE_URL` 覆盖 relay 地址（默认 `http://192.168.210.107:3000/api`）
+- Node >= 22.19（node:sqlite 有 ExperimentalWarning，可忽略）
+- `@earendil-works/pi-durable` + `@earendil-works/pi-ai` + `@earendil-works/chord`（npm 已装，均 1.1.0，与 pi CLI v1.1.0 同代）
 - 可选 `PI_DURABLE_TOKEN` —— daemon API 鉴权令牌（绑定非回环地址时强烈建议设置）
 - 可选 `PI_DURABLE_HOST` —— serve 默认监听地址（默认 `127.0.0.1`）
+
+## 模型后端（多主机兼容）
+
+`lib/models.js` 在每台主机上自动选择可用的后端，同一份代码无需修改：
+
+| 优先级 | 来源 | 说明 |
+|---|---|---|
+| 1 | `PI_DURABLE_PROVIDER=ark` 或 `=<pi provider id>` | 显式指定 |
+| 2 | 本机 pi 配置（自动，macOS 默认） | `~/.pi/agent/auth.json` 有 api-key provider 时启用：provider、key、模型目录（如 zai 的 glm-5.3 / glm-4.6v / glm-5.3-flash / glm-5.3-highspeed）与默认模型全部跟随 pi CLI 的 settings.json / models-store.json |
+| 3 | Ark relay（自动回退，WSL 默认） | 检测到 `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY` 时启用；`ARK_BASE_URL` 可覆盖 relay 地址（默认 `http://192.168.210.107:3000/api`） |
+
+- `PI_DURABLE_MODEL` 覆盖默认模型（两条路径都适用）；`PI_DURABLE_PI_DIR` 覆盖 pi agent 目录（默认 `~/.pi/agent`）
+- 专用环境变量 `PI_DURABLE_KEY_<PROVIDER_ID>`（非字母数字转 `_`）优先于 pi 的 auth.json
+- host-guard 的磁盘类拦截同时覆盖 Linux（/dev/sd*、nvme、vd）与 macOS（/dev/disk*、/dev/rdisk*、diskutil 抹除/卸载/缩容）
 
 ## 单写者模型（重要）
 
@@ -97,9 +111,16 @@ node host.js config               # 把存储的 agent cwd/model 重置为本目
 7. steer：sleep 15 运行中插入转向指令 → 当前工具轮结束后并入同一 run 执行
 8. 崩溃恢复：daemon 被 SIGTERM 时 run 未完成 → 新进程 `wait` 接管 → 回答落库
 
+## macOS 兼容改造（2026-10-08）
+
+1. 模型层抽为 `lib/models.js`：本机自动选中 `zai-coding-cn/glm-5.3`（读 `~/.pi/agent` 配置），WSL 走 ark 需 relay 令牌；`PI_DURABLE_PROVIDER=ark node host.js status` 验证 ark 路径可用
+2. 真实往返：`node host.js ask` 经 zai GLM-5.3（openai-completions + zai thinking 格式）成功回答，持久化/锁/恢复链路正常
+3. host-guard 增加 macOS 磁盘模式（/dev/disk*、/dev/rdisk*、diskutil eraseDisk/apfs resizeContainer/unmountDisk 等），12 例正则全部通过，`diskutil info/verify` 等只读命令不受影响
+4. Node v24.5.0（macOS Homebrew）实测 node:sqlite 可用，仅 ExperimentalWarning
+
 ## 已知限制
 
-- relay 只回传 cacheRead，cacheWrite 恒为 0（费用统计偏低，model cost 全填 0）
+- relay 只回传 cacheRead，cacheWrite 恒为 0（费用统计偏低，model cost 全填 0；仅影响 ark 路径，zai 路径用量按 models-store 计）
 - daemon 与 CLI 二选一（单写者锁）；daemon 未做持久化队列之外的多副本/HA
 - Web UI 为单会话（根会话）视图；多会话/子会话面板待建（taskGraph 与 details 已可支撑）
 - 环境隔离（per-conversation 容器 ExecutionEnv）未实现，工具直接跑在本机 workspace/
