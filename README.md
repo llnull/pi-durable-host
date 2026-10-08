@@ -87,6 +87,10 @@ guard 拦截危险 bash 命令时，命令进入 `data/approvals-pending.json` �
 - `node host.js restart` / `POST /api/restart`：**热重启**。daemon 先派生 detached 后继进程
   （`serve --takeover`，最长等锁 60s），再优雅关闭存储退出；后继接管锁后 `resume()` 接续所有
   未完成的 run（包括正在生成的回答）。Web UI 的 SSE 会自动重连。典型用途：改完 host 代码后零数据损失升级
+- 踩坑记录：daemon 停止时，运行中的工具调用会被执行环境 `killProcessTree` 按**进程组** SIGKILL——
+  从工具里 nohup 出来的后台脚本会一起被杀（nohup 只免 SIGHUP，不换进程组；且 macOS 无 setsid）。
+  需要跨 daemon 存活的工作必须独立会话（如 `node -e spawn(...,{detached:true})`），
+  或干脆走 `/api/restart`（后继由 daemon 自身派生，天然不在工具进程树里）
 - `node host.js timing [n]`：tool-timing.log 汇总（每工具 n / avg / p50 / p95 / max）+ 最近 n 条
 
 ## 用法
