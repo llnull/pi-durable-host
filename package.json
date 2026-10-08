@@ -1,0 +1,19 @@
+{
+  "name": "pi-durable-host",
+  "private": true,
+  "type": "module",
+  "version": "0.2.0",
+  "description": "Local Pi Durable host: durable conversations on SQLite, Ark relay model, CodingTools, guard/project-context/subagent extensions, single-writer lock, daemon with web UI",
+  "scripts": {
+    "ask": "node host.js ask",
+    "history": "node host.js history",
+    "status": "node host.js status",
+    "serve": "node host.js serve",
+    "tasks": "node host.js tasks"
+  },
+  "dependencies": {
+    "@earendil-works/chord": "^1.1.0",
+    "@earendil-works/pi-ai": "^1.1.0",
+    "@earendil-works/pi-durable": "^1.1.0"
+  }
+}

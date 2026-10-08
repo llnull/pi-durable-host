@@ -1,0 +1,632 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pi Durable Host</title>
+<link rel="icon" href="data:,">
+<style>
+  :root {
+    --bg: #f5f6fa; --paper: #fff; --ink: #1a2233; --soft: #4a5568; --faint: #8a94a6;
+    --accent: #4f46e5; --accent-soft: #eef0fe; --line: #e3e7ef;
+    --green: #0f7b4f; --green-bg: #e8f6ee; --red: #b3261e; --red-bg: #fdeceb;
+    --amber: #92600a; --amber-bg: #fdf3e0; --mono: ui-monospace, "JetBrains Mono", Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  /* 应用式布局：body 不滚动（100dvh 弹性视口），header/工具栏固定顶部、composer 固定底部，#transcript 内部滚动 */
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.65 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; overflow-wrap: break-word; height: 100vh; height: 100dvh; display: flex; flex-direction: column; overflow: hidden; }
+  header.top {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 10px; flex: none;
+    padding: 10px 18px; background: #1e1b4b; color: #eef0ff;
+  }
+  header.top h1 { font-size: 15px; margin: 0 8px 0 0; font-weight: 650; }
+  .badge { border-radius: 999px; padding: 1px 10px; font-size: 12px; font-weight: 600; }
+  .badge.busy { background: var(--amber-bg); color: var(--amber); }
+  .badge.idle { background: var(--green-bg); color: var(--green); }
+  .badge.dim { background: rgba(255,255,255,.14); color: #dfe2ff; font-weight: 400; }
+  header.top .spacer { flex: 1; }
+  header.top button {
+    background: rgba(255,255,255,.12); color: #eef0ff; border: 1px solid rgba(255,255,255,.25);
+    border-radius: 8px; padding: 4px 12px; font-size: 12.5px; cursor: pointer;
+  }
+  header.top button:hover { background: rgba(255,255,255,.22); }
+
+  .toolbar {
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: center; flex: none;
+    width: 100%; max-width: 1200px; margin: 0 auto; padding: 12px 14px 8px;
+    background: var(--bg);
+  }
+  .toolbar input[type=search] {
+    flex: 1; min-width: 180px; border: 1px solid var(--line); border-radius: 9px;
+    padding: 6px 12px; font: inherit; background: var(--paper); outline-color: var(--accent);
+  }
+  .toolbar .chip {
+    border: 1px solid var(--line); background: var(--paper); color: var(--soft);
+    border-radius: 999px; padding: 4px 12px; font-size: 12.5px; cursor: pointer; user-select: none;
+  }
+  .toolbar .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .toolbar .mini { border: 1px solid var(--line); background: var(--paper); color: var(--soft); border-radius: 9px; padding: 5px 10px; font-size: 12.5px; cursor: pointer; }
+
+  /* minmax(0,1fr)：断开 min-content 向轨道上传，防止长代码行/表格把整页撑宽；flex:1 占满剩余高度 */
+  .layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 300px); gap: 14px; width: 100%; max-width: 1200px; margin: 6px auto 0; padding: 0 14px 14px; flex: 1; min-height: 0; }
+  @media (max-width: 900px) { .layout { display: flex; flex-direction: column; } #transcript { flex: 1; min-height: 0; } .side { flex: none; max-height: 38%; } }
+  @media (max-width: 560px) { .layout { padding: 0 10px 10px; } .run-stats { display: none; } .msg .bubble { max-width: 94%; } }
+  .panel { background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; min-width: 0; max-width: 100%; }
+  #transcript { overflow-y: auto; min-height: 0; padding-bottom: 18px; }
+  .side { display: flex; flex-direction: column; gap: 14px; min-width: 0; min-height: 0; overflow-y: auto; }
+  .side .panel { overflow: hidden; }
+  .panel h3 { margin: 0 0 8px; font-size: 13px; color: var(--faint); font-weight: 600; letter-spacing: .06em; }
+
+  /* ===== run 分组 ===== */
+  .run { border: 1px solid var(--line); border-radius: 12px; margin: 12px 0; background: var(--paper); overflow: hidden; }
+  .run-head {
+    display: flex; align-items: baseline; gap: 8px; padding: 9px 14px; cursor: pointer;
+    background: #fafbfe; border-bottom: 1px solid transparent; user-select: none;
+  }
+  .run.open .run-head { border-bottom-color: var(--line); }
+  .run-head:hover { background: var(--accent-soft); }
+  .run-no { font: 12px var(--mono); color: var(--faint); }
+  .run-tag { font-size: 11.5px; font-weight: 700; border-radius: 5px; padding: 0 7px; }
+  .run-tag.new { color: #0b5aa5; background: #e8f1fd; }
+  .run-tag.steer { color: var(--amber); background: var(--amber-bg); }
+  .run-preview { flex: 1; min-width: 0; font-size: 13px; color: var(--soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .run-preview b { color: var(--ink); font-weight: 600; }
+  .run-stats { font-size: 11.5px; color: var(--faint); white-space: nowrap; }
+  .run-caret { color: var(--faint); font-size: 11px; }
+  .run-body { padding: 6px 14px 10px; }
+  .epoch { text-align: center; color: var(--faint); font-size: 12px; margin: 18px 0 4px; display: flex; align-items: center; gap: 10px; }
+  .epoch::before, .epoch::after { content: ""; flex: 1; border-top: 1px dashed var(--line); }
+
+  /* ===== 气泡 ===== */
+  .msg { display: flex; margin: 8px 0; }
+  .msg.user { justify-content: flex-end; }
+  .bubble { max-width: 86%; border-radius: 12px; padding: 8px 13px; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; }
+  .msg.user .bubble { background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
+  .msg.agent .bubble { background: #f4f5fa; border: 1px solid var(--line); border-bottom-left-radius: 4px; }
+  .msg.stream .bubble { border-style: dashed; }
+  .bubble .e-body + .e-body, .bubble details + .e-body, .e-body + details { margin-top: 6px; }
+  .e-body.thinking { color: var(--faint); font-size: 13px; }
+  .quoted { border-left: 3px solid var(--line); padding-left: 10px; color: var(--soft); }
+  /* ===== markdown 渲染 ===== */
+  .md { white-space: normal; }
+  .md p { margin: 3px 0; }
+  .md h1.md-h, .md h2.md-h { font-size: 1.2em; margin: 10px 0 4px; border-bottom: 1px solid var(--line); padding-bottom: 2px; }
+  .md h3.md-h, .md h4.md-h { font-size: 1.08em; margin: 8px 0 3px; }
+  .md h5.md-h, .md h6.md-h { font-size: 1em; margin: 6px 0 2px; }
+  .md .md-list { margin: 4px 0; padding-left: 22px; }
+  .md .md-list li { margin: 2px 0; }
+  .md .md-q { margin: 4px 0; padding: 2px 10px; border-left: 3px solid var(--accent-line); color: var(--soft); background: #fafbfe; border-radius: 0 6px 6px 0; }
+  .md .md-inline { font-family: var(--mono); font-size: .88em; background: #eef0f6; border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; }
+  .md table { display: block; width: max-content; max-width: 100%; overflow-x: auto; border-collapse: collapse; margin: 6px 0; font-size: 13px; }
+  .md th, .md td { border: 1px solid var(--line); padding: 3px 9px; }
+  .md th { background: #f0f2f8; }
+  .md hr { border: none; border-top: 1px solid var(--line); margin: 8px 0; }
+  .md a { color: var(--accent); }
+  details summary { cursor: pointer; color: var(--faint); font-size: 12.5px; user-select: none; }
+  pre.code { background: #14181f; color: #d8e0f0; border-radius: 8px; padding: 8px 12px; overflow-x: auto; max-width: 100%; font: 12px/1.6 var(--mono); margin: 4px 0; }
+  .muted { color: var(--faint); font-size: 12.5px; }
+
+  /* ===== 工具卡片（call + result 配对）===== */
+  .tool-card { border: 1px solid var(--line); border-radius: 10px; margin: 6px 0; background: #fff; overflow: hidden; }
+  .tool-card .tc-head {
+    display: flex; align-items: center; gap: 8px; padding: 6px 12px; cursor: pointer;
+    font: 12.5px var(--mono); color: var(--soft); background: #fafbfe; user-select: none;
+  }
+  .tool-card .tc-head:hover { background: var(--accent-soft); }
+  .tool-card .tc-name { font-weight: 700; color: var(--accent); }
+  .tool-card.err .tc-status { color: var(--red); }
+  .tool-card.ok .tc-status { color: var(--green); }
+  .tool-card.running .tc-status { color: var(--amber); }
+  .tool-card .tc-body { border-top: 1px solid var(--line); padding: 6px 12px; }
+  .syschip { font-size: 12px; color: var(--faint); margin: 6px 0; }
+
+  .kv { font-size: 12.5px; color: var(--soft); margin: 2px 0; overflow-wrap: anywhere; }
+  .kv b { color: var(--ink); font-weight: 600; }
+  .live-block { border: 1px dashed var(--accent-line); border-radius: 10px; padding: 8px 12px; margin-bottom: 10px; background: #fbfcff; }
+  .live-block .t { font-size: 12px; color: var(--accent); font-weight: 600; margin-bottom: 3px; }
+
+  .composer { flex: none; background: var(--bg); border-top: 1px solid var(--line); padding: 10px 14px 12px; }
+  .composer .inner { max-width: 1172px; margin: 0 auto; display: flex; gap: 8px; }
+  .composer textarea {
+    flex: 1; resize: none; border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px;
+    font: inherit; min-height: 48px; max-height: 160px; background: var(--paper); outline-color: var(--accent);
+  }
+  .composer button { border: none; border-radius: 12px; padding: 0 20px; font: inherit; font-weight: 600; cursor: pointer; background: var(--accent); color: #fff; }
+  .composer button.steer { background: #0b5aa5; }
+  .composer button:disabled { opacity: .45; cursor: not-allowed; }
+  .toast { position: fixed; top: 54px; left: 50%; transform: translateX(-50%); background: var(--red-bg); color: var(--red); border: 1px solid #f2c4c0; border-radius: 10px; padding: 8px 16px; font-size: 13px; z-index: 99; display: none; }
+  #conn { font-size: 12px; }
+</style>
+</head>
+<body>
+<header class="top">
+  <h1>Pi Durable Host</h1>
+  <span id="status" class="badge idle">空闲</span>
+  <span id="model" class="badge dim">…</span>
+  <span id="cwd" class="badge dim"></span>
+  <span class="spacer"></span>
+  <span id="conn" class="badge dim">连接中…</span>
+  <button id="btnTasks">任务图</button>
+  <button id="btnCompact">压缩</button>
+  <button id="btnReset">重置上下文</button>
+</header>
+
+<div class="toolbar">
+  <input type="search" id="search" placeholder="搜索对话内容…（过滤轮次并自动展开）">
+  <span class="chip on" data-filter="all">全部</span>
+  <span class="chip" data-filter="tools">含工具调用</span>
+  <span class="chip" data-filter="steer">转向</span>
+  <button class="mini" id="btnExpand">全部展开</button>
+  <button class="mini" id="btnCollapse">全部收起</button>
+  <button class="mini" id="btnBottom">跳到最新 ↓</button>
+</div>
+
+<div class="layout">
+  <main class="panel" id="transcript"><div class="muted">（加载中…）</div></main>
+  <aside class="side">
+    <div class="panel" id="livePanel" style="display:none">
+      <h3>实时运行</h3><div id="liveBody"></div>
+    </div>
+    <div class="panel" id="inboxPanel" style="display:none">
+      <h3>排队中</h3><div id="inboxBody"></div>
+    </div>
+    <div class="panel">
+      <h3>用量与会话</h3><div id="usageBody" class="muted">…</div>
+    </div>
+    <div class="panel" id="tasksPanel" style="display:none">
+      <h3>任务图</h3><div id="tasksBody"></div>
+    </div>
+  </aside>
+</div>
+
+<div class="composer">
+  <div class="inner">
+    <textarea id="input" placeholder="输入提示词…（Enter 发送，Shift+Enter 换行）"></textarea>
+    <button id="btnSend" title="发送（忙时自动排队为 follow-up）">发送</button>
+    <button id="btnSteer" class="steer" title="插入当前工具轮之后，并入正在运行的工作">转向</button>
+    <button id="btnAbort" title="中止当前运行">中止</button>
+  </div>
+</div>
+<div id="toast" class="toast"></div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+// ---------- 状态 ----------
+const expanded = new Set();   // 展开的 run 的首条 entry id
+let filterMode = "all";
+let hasRendered = false;
+let followBottom = true;      // 视图跟随：内容更新时自动滚到最新（用户上翻阅读时自动关闭）
+
+function toast(msg) { const t = $("toast"); t.textContent = msg; t.style.display = "block"; setTimeout(() => (t.style.display = "none"), 4000); }
+async function api(path, opts) {
+  const res = await fetch(path, { headers: { "content-type": "application/json" }, ...opts });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || res.statusText);
+  return body;
+}
+
+// ---------- 轻量 markdown 渲染（先转义再转换，防 XSS；自包含无依赖） ----------
+function inlineMd(s) {
+  return s
+    .replace(/`([^`]+)`/g, '<code class="md-inline">$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[^*\w])\*([^*\n]+)\*/g, "$1<em>$2</em>")
+    .replace(/~~([^~]+)~~/g, "<del>$1</del>")
+    .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+}
+
+function mdToHtml(src) {
+  const raw = String(src ?? "");
+  if (!raw.trim()) return "";
+  const codeBlocks = [];
+  // 围栏代码块先摘出（未闭合的也按代码处理，兼容流式半截输出）
+  const text = raw.replace(/\r\n/g, "\n").replace(/```[^\n`]*\n([\s\S]*?)(?:```|$)/g, (m, code) => {
+    codeBlocks.push(`<pre class="code">${esc(code.replace(/\n$/, ""))}</pre>`);
+    return `\u0000CODE${codeBlocks.length - 1}\u0000`;
+  });
+  const lines = esc(text).split("\n"); // 其余文本先转义，后续变换都在安全文本上做
+  const out = [];
+  let list = null;
+  let para = [];
+  const flushPara = () => { if (para.length) { out.push(`<p>${inlineMd(para.join("<br>"))}</p>`); para = []; } };
+  const flushList = () => { if (list) { out.push(`</${list}>`); list = null; } };
+  const flushAll = () => { flushPara(); flushList(); };
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i].trim();
+    const ph = t.match(/^\u0000CODE(\d+)\u0000$/);
+    if (ph) { flushAll(); out.push(codeBlocks[+ph[1]]); continue; }
+    if (!t) { flushAll(); continue; }
+    // 表格：当前行以 | 开头且下一行是分隔行
+    if (t.startsWith("|") && i + 1 < lines.length && /\|?[\s:|-]+\|?/.test(lines[i + 1]) && lines[i + 1].includes("-") && !lines[i + 1].match(/[\w\u4e00-\u9fa5]/)) {
+      flushAll();
+      const rows = [];
+      let j = i;
+      while (j < lines.length && lines[j].trim().startsWith("|")) { rows.push(lines[j].trim()); j++; }
+      const cells = (r) => r.replace(/^\||\|$/g, "").split("|").map((c) => inlineMd(c.trim()));
+      let html = "<table>";
+      if (rows.length >= 2) {
+        html += "<thead><tr>" + cells(rows[0]).map((c) => `<th>${c}</th>`).join("") + "</tr></thead><tbody>";
+        for (const r of rows.slice(2)) html += "<tr>" + cells(r).map((c) => `<td>${c}</td>`).join("") + "</tr>";
+        html += "</tbody>";
+      } else for (const r of rows) html += "<tr>" + cells(r).map((c) => `<td>${c}</td>`).join("") + "</tr>";
+      out.push(html + "</table>");
+      i = j - 1;
+      continue;
+    }
+    const h = t.match(/^(#{1,6})\s+(.*)$/);
+    if (h) { flushAll(); const l = h[1].length; out.push(`<h${l} class="md-h">${inlineMd(h[2])}</h${l}>`); continue; }
+    if (/^(-{3,}|\*{3,}|_{3,})$/.test(t)) { flushAll(); out.push("<hr>"); continue; }
+    if (t.startsWith("&gt;")) { flushAll(); out.push(`<blockquote class="md-q">${inlineMd(t.replace(/^&gt;\s?/, ""))}</blockquote>`); continue; }
+    const ul = t.match(/^[-*]\s+(.*)$/);
+    if (ul) { flushPara(); if (list !== "ul") { flushList(); out.push('<ul class="md-list">'); list = "ul"; } out.push(`<li>${inlineMd(ul[1])}</li>`); continue; }
+    const ol = t.match(/^\d+[.)]\s+(.*)$/);
+    if (ol) { flushPara(); if (list !== "ol") { flushList(); out.push('<ol class="md-list">'); list = "ol"; } out.push(`<li>${inlineMd(ol[1])}</li>`); continue; }
+    flushList();
+    para.push(t);
+  }
+  flushAll();
+  return out.join("");
+}
+
+// 摘要行用的纯文本化：去 markdown 记号
+function stripMd(s) {
+  return String(s ?? "")
+    .replace(/```[\s\S]*?(?:```|$)/g, " [代码] ")
+    .replace(/`([^`]*)`/g, "$1")
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/[*_~#>|]+/g, " ")
+    .replace(/^\s*&gt;/gm, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// ---------- 工具函数 ----------
+function msgTime(m) { return m?.timestamp ? new Date(m.timestamp).toLocaleTimeString("zh-CN", { hour12: false }) : ""; }
+// 消息 content 可能是块数组（assistant/user）或纯字符串（system）——统一归一化为块数组
+function asBlocks(content) {
+  if (Array.isArray(content)) return content;
+  if (typeof content === "string" && content.trim()) return [{ type: "text", text: content }];
+  return [];
+}
+function textBlocks(content) { return asBlocks(content).filter((b) => b.type === "text").map((b) => b.text).join("").trim(); }
+function hasToolCall(entry) {
+  return (entry.model ?? []).some((m) => Array.isArray(m.content) && m.content.some((b) => b.type === "toolCall"));
+}
+function isFinalAnswer(entry) {
+  if (entry.kind !== "pi.assistant") return false;
+  const m = entry.model?.[0];
+  return m && !hasToolCall(entry) && textBlocks(m.content);
+}
+function flatText(entry) {
+  let out = "";
+  for (const m of entry.model ?? []) {
+    for (const b of asBlocks(m.content)) out += " " + (b.text ?? b.thinking ?? (b.type === "toolCall" ? JSON.stringify(b.arguments ?? {}) : ""));
+  }
+  if (entry.data != null) out += " " + JSON.stringify(entry.data);
+  return out;
+}
+
+// ---------- run 分组 ----------
+// 一轮 run = 一条 pi.user 输入带来的所有条目，直到下一条 pi.user 或上下文边界。
+// 前一条目不是"最终回答"（还在工具轮中）的 pi.user 视为 steer（转向/追加指令）。
+function groupRuns(entries) {
+  const groups = [];
+  let current = null;
+  let lastFinal = true;
+  for (const e of entries) {
+    if (e.head != null) { current = null; groups.push({ type: "epoch", entry: e }); continue; }
+    if (e.kind === "pi.user") {
+      const steer = !lastFinal;
+      current = { type: "run", steer, firstId: e.id, time: msgTime(e.model?.[0]), entries: [e] };
+      groups.push(current);
+      lastFinal = false;
+      continue;
+    }
+    if (!current) { current = { type: "run", steer: false, firstId: e.id, time: "", entries: [e] }; groups.push(current); }
+    else current.entries.push(e);
+    if (isFinalAnswer(e)) lastFinal = true;
+  }
+  for (const g of groups) {
+    if (g.type !== "run") continue;
+    const promptEntry = g.entries.find((e) => e.kind === "pi.user");
+    g.prompt = promptEntry ? textBlocks(promptEntry.model?.[0]?.content) : "(无用户输入)";
+    const final = [...g.entries].reverse().find(isFinalAnswer);
+    g.answer = final ? textBlocks(final.model?.[0]?.content) : "";
+    g.turns = g.entries.filter((e) => e.kind === "pi.assistant").length;
+    g.tools = g.entries.filter((e) => e.kind === "pi.tool-result").length;
+  }
+  return groups;
+}
+
+// ---------- 工具卡片：call 与 result 配对 ----------
+function toolCardHtml(call, resultEntry, liveTool) {
+  const status = resultEntry ? (resultEntry.model?.[0]?.isError ? "err" : "ok") : liveTool ? (liveTool.status === "running" ? "running" : "") : "";
+  const label = { err: "❌ 出错", ok: "✅ 完成", running: "⏳ 运行中", "": "· 等待" }[status];
+  const dur = resultEntry?.model?.[0]?.durationMs;
+  const args = JSON.stringify(call.arguments ?? {});
+  let body = `<details><summary>参数</summary><pre class="code">${esc(args.length > 800 ? args.slice(0, 800) + "…" : args)}</pre></details>`;
+  const output = resultEntry
+    ? asBlocks(resultEntry.model?.[0]?.content).map((b) => (b.type === "text" ? b.text : "")).join("\n")
+    : liveTool?.output ?? "";
+  if (output) body += `<pre class="code">${esc(output.length > 2000 ? "…\n" + output.slice(-2000) : output)}</pre>`;
+  const diag = resultEntry?.data?.diagnostics ?? liveTool?.diagnostics ?? [];
+  for (const d of diag) if (d.message) body += `<div class="muted">⚠ ${esc(d.message)}</div>`;
+  return `<div class="tool-card ${status}"><details open>
+    <summary class="tc-head"><span class="tc-name">🛠 ${esc(call.name)}</span><span class="tc-status">${label}${dur != null ? ` · ${dur}ms` : ""}</span></summary>
+    <div class="tc-body">${body}</div></details></div>`;
+}
+
+// ---------- 条目渲染（run 展开后）----------
+function entryHtml(e, resultIndex, liveToolByCall) {
+  if (e.kind === "pi.user") {
+    return `<div class="msg user"><div class="bubble">${esc(textBlocks(e.model?.[0]?.content))}</div></div>`;
+  }
+  if (e.kind === "pi.system") {
+    return `<details class="syschip"><summary>⚙ 系统提示变更（${esc(Object.keys(e.model?.[0]?.sections ?? {}).join(", ") || "—")}）</summary><pre class="code">${esc(JSON.stringify(e.model?.[0]?.sections ?? e.model?.[0]?.content ?? {}, null, 1).slice(0, 1200))}</pre></details>`;
+  }
+  if (e.kind === "pi.tool-result") {
+    const tr = e.model?.[0];
+    if (tr?.toolCallId && resultIndex.has(tr.toolCallId)) return ""; // 已并入工具卡片
+    const out = asBlocks(tr?.content).map((b) => (b.type === "text" ? b.text : "")).join("\n");
+    return `<div class="tool-card ${tr?.isError ? "err" : "ok"}"><details open><summary class="tc-head"><span class="tc-name">🛠 ${esc(tr?.toolName ?? "?")}</span><span class="tc-status">${tr?.isError ? "❌ 出错" : "✅ 完成"}</span></summary><div class="tc-body"><pre class="code">${esc(out)}</pre></div></details></div>`;
+  }
+  if (e.kind === "pi.assistant") {
+    const parts = [];
+    for (const m of e.model ?? []) {
+      for (const b of asBlocks(m.content)) {
+        if (b.type === "text" && b.text?.trim()) parts.push(`<div class="e-body md">${mdToHtml(b.text)}</div>`);
+        else if (b.type === "thinking" && b.thinking?.trim()) parts.push(`<details><summary>💭 思考过程</summary><div class="e-body thinking quoted">${esc(b.thinking)}</div></details>`);
+        else if (b.type === "toolCall") parts.push(toolCardHtml(b, resultIndex.get(b.id), liveToolByCall.get(b.id)));
+      }
+    }
+    return `<div class="msg agent"><div class="bubble">${parts.join("") || '<span class="muted">（无内容）</span>'}</div></div>`;
+  }
+  return `<div class="msg agent"><div class="bubble muted">${esc(e.kind)}：<pre class="code">${esc(JSON.stringify(e.data ?? e.model ?? {}, null, 1).slice(0, 800))}</pre></div></div>`;
+}
+
+// ---------- 主渲染 ----------
+function render(view) {
+  const live = view.docs?.["pi.live"] ?? {};
+  const busy = Boolean(live.run);
+  const st = $("status");
+  st.textContent = busy ? "运行中" : "空闲";
+  st.className = "badge " + (busy ? "busy" : "idle");
+  $("btnAbort").disabled = !busy;
+
+  const agent = view.docs?.["pi.agent"] ?? {};
+  $("model").textContent = agent.model ? `${agent.model.provider}/${agent.model.modelId ?? ""}` : "model ?";
+  $("cwd").textContent = agent.cwd ?? "";
+
+  const entries = (view.entries ?? []).filter((e) => e.kind !== "head");
+  const resultIndex = new Map();
+  for (const e of entries) {
+    if (e.kind === "pi.tool-result") {
+      const tr = e.model?.[0];
+      if (tr?.toolCallId) resultIndex.set(tr.toolCallId, e);
+    }
+  }
+  const liveToolByCall = new Map((live.tools ?? []).map((t) => [t.callId, t]));
+
+  const groups = groupRuns(entries);
+  const q = $("search").value.trim().toLowerCase();
+  let runNo = 0;
+  const sections = [];
+
+  // 默认只展开最后一轮；搜索时展开所有命中轮
+  // 最后一轮（或新出现的轮次）自动展开
+  if (groups.length) {
+    const lastRun = [...groups].reverse().find((g) => g.type === "run");
+    const lastFirst = lastRun ? String(lastRun.firstId) : "";
+    if (lastFirst && $("transcript").dataset.lastFirst !== lastFirst) {
+      expanded.add(lastFirst);
+      $("transcript").dataset.lastFirst = lastFirst;
+    }
+  }
+
+  for (const g of groups) {
+    if (g.type === "epoch") {
+      const label = g.entry.kind === "pi.reset" ? "上下文重置" : "上下文压缩";
+      const summary = textBlocks(g.entry.model?.[0]?.content);
+      sections.push(`<div class="epoch">── ${label} ──</div>` + (summary ? `<div class="quoted muted md">${mdToHtml(summary)}</div>` : ""));
+      continue;
+    }
+    runNo++;
+    const firstId = String(g.firstId); // 展开状态统一用字符串（dataset 与 Set 的一致性）
+    const hay = (g.prompt + " " + g.entries.map(flatText).join(" ")).toLowerCase();
+    if (q && !hay.includes(q)) continue;
+    if (filterMode === "tools" && g.tools === 0) continue;
+    if (filterMode === "steer" && !g.steer) continue;
+
+    const isOpen = q ? true : expanded.has(firstId);
+    const promptText = stripMd(g.prompt);
+    const answerText = stripMd(g.answer);
+    const preview = g.answer
+      ? `<b>${esc(promptText)}</b> → ${esc(answerText.length > 70 ? answerText.slice(0, 70) + "…" : answerText)}`
+      : `<b>${esc(promptText)}</b>${busy ? " <span class='muted'>（进行中…）</span>" : ""}`;
+    const stats = [`${g.turns} 轮响应`, g.tools ? `${g.tools} 次工具` : null, g.time].filter(Boolean).join(" · ");
+    let body = "";
+    if (isOpen) {
+      body = g.entries.map((e) => entryHtml(e, resultIndex, liveToolByCall)).join("");
+      if (busy && g === [...groups].reverse().find((x) => x.type === "run")) {
+        // 流式生成中的部分回答
+        const gen = live.generation;
+        if (gen?.message?.content) {
+          const parts = [];
+          for (const b of asBlocks(gen.message.content)) {
+            if (b.type === "text" && b.text) parts.push(`<div class="e-body md">${mdToHtml(b.text)}</div>`);
+            else if (b.type === "thinking" && b.thinking) parts.push(`<div class="e-body thinking quoted">${esc(b.thinking)}</div>`);
+          }
+          if (parts.length) body += `<div class="msg agent stream"><div class="bubble">${parts.join("")}<div class="muted">✍ 生成中（第 ${gen.attempt + 1} 次）${gen.retry ? ` · 重试: ${esc(gen.retry.error)}` : ""}</div></div></div>`;
+        }
+        // 尚未拿到结果的运行中工具
+        for (const t of live.tools ?? []) {
+          if (resultIndex.has(t.callId)) continue;
+          body += toolCardHtml({ name: t.name, id: t.callId, arguments: t.details?.arguments ?? {} }, null, t);
+        }
+      }
+    }
+    sections.push(`<div class="run ${isOpen ? "open" : ""}" data-first="${firstId}">
+      <div class="run-head" data-first="${firstId}">
+        <span class="run-no">#${runNo}</span>
+        <span class="run-tag ${g.steer ? "steer" : "new"}">${g.steer ? "转向" : "新输入"}</span>
+        <span class="run-preview">${preview}</span>
+        <span class="run-stats">${stats}</span>
+        <span class="run-caret">${isOpen ? "▾" : "▸"}</span>
+      </div>
+      ${isOpen ? `<div class="run-body">${body}</div>` : ""}
+    </div>`);
+  }
+
+  const t = $("transcript");
+  const nearBottom = t.scrollHeight - t.scrollTop - t.clientHeight < 160;
+  t.innerHTML = sections.join("") || `<div class="muted">（无匹配内容）</div>`;
+  if (nearBottom || followBottom) t.scrollTop = t.scrollHeight; // 内容更新时视图跟随（用户上翻阅读时不拉拽）
+  maybeRefreshTasks(); // 任务图面板打开时随渲染节流刷新（内部再限 3s）
+
+  // 侧栏：实时运行
+  const lp = $("livePanel");
+  const gen = live.generation;
+  if (busy || (live.tools ?? []).length || live.compactions?.length) {
+    lp.style.display = "";
+    let html = "";
+    if (gen) {
+      html += `<div class="live-block"><div class="t">生成中（第 ${gen.attempt + 1} 次尝试）</div>`;
+      for (const b of asBlocks(gen.message?.content)) {
+        if (b.type === "text" && b.text) html += `<div class="e-body md">${mdToHtml(b.text)}</div>`;
+        else if (b.type === "thinking" && b.thinking) html += `<div class="e-body thinking quoted">${esc(b.thinking)}</div>`;
+      }
+      if (gen.retry) html += `<div class="muted">⏳ 重试：${esc(gen.retry.error)} · ${new Date(gen.retry.at).toLocaleTimeString()}</div>`;
+      html += `</div>`;
+    }
+    for (const c of live.compactions ?? []) html += `<div class="live-block"><div class="t">🗜 压缩（${esc(c.reason)}${c.blocking ? " · 阻塞中" : ""}）</div></div>`;
+    $("liveBody").innerHTML = html || `<div class="muted">运行中…</div>`;
+  } else lp.style.display = "none";
+
+  // 侧栏：inbox / 用量
+  const inbox = view.docs?.["pi.inbox"]?.items ?? [];
+  const ip = $("inboxPanel");
+  if (inbox.length) {
+    ip.style.display = "";
+    $("inboxBody").innerHTML = inbox.map((it) => {
+      const text = it.content?.content ?? JSON.stringify(it.entry ?? it);
+      return `<div class="kv"><b>${it.mode === "steer" ? "转向" : it.mode === "write" ? "写入" : "排队"}</b> · ${esc(String(text).slice(0, 120))}</div>`;
+    }).join("");
+  } else ip.style.display = "none";
+
+  const usage = view.docs?.["pi.usage"] ?? { models: {} };
+  const sum = { input: 0, output: 0, cacheRead: 0 };
+  for (const u of Object.values(usage.models ?? {})) { sum.input += u.input ?? 0; sum.output += u.output ?? 0; sum.cacheRead += u.cacheRead ?? 0; }
+  $("usageBody").innerHTML =
+    `<div class="kv">模型输入 <b>${sum.input.toLocaleString()}</b> · 输出 <b>${sum.output.toLocaleString()}</b> · 缓存读 <b>${sum.cacheRead.toLocaleString()}</b> tokens</div>` +
+    `<div class="kv">会话 ID <b>${esc(view.conversation?.id ?? "?")}</b> · 条目 <b>${entries.length}</b> · 对话轮次 <b>${groups.filter((g) => g.type === "run").length}</b></div>`;
+}
+
+// ---------- 交互 ----------
+$("transcript").addEventListener("click", (ev) => {
+  const head = ev.target.closest(".run-head");
+  if (!head) return;
+  const first = head.dataset.first;
+  expanded.has(first) ? expanded.delete(first) : expanded.add(first);
+  const run = head.closest(".run");
+  run.classList.toggle("open");
+  const body = run.querySelector(".run-body");
+  if (body) { body.remove(); run.querySelector(".run-caret").textContent = "▸"; }
+  else { run.querySelector(".run-caret").textContent = "▾"; rerender(); }
+});
+function rerender() { if (lastView) render(lastView); }
+let lastView = null;
+
+document.querySelectorAll(".chip").forEach((chip) => {
+  chip.onclick = () => {
+    document.querySelectorAll(".chip").forEach((c) => c.classList.remove("on"));
+    chip.classList.add("on");
+    filterMode = chip.dataset.filter;
+    rerender();
+  };
+});
+$("search").addEventListener("input", rerender);
+$("btnExpand").onclick = () => { if (lastView) for (const g of groupRuns((lastView.entries ?? []).filter((e) => e.kind !== "head"))) if (g.type === "run") expanded.add(String(g.firstId)); rerender(); };
+$("btnCollapse").onclick = () => { expanded.clear(); rerender(); };
+$("btnBottom").onclick = () => { followBottom = true; $("transcript").scrollTo({ top: $("transcript").scrollHeight, behavior: "smooth" }); };
+// 用户手动滚动时更新跟随意图：贴近底部视为想要跟随
+$("transcript").addEventListener("scroll", () => {
+  const t = $("transcript");
+  followBottom = t.scrollHeight - t.scrollTop - t.clientHeight < 90;
+}, { passive: true });
+
+$("btnSend").onclick = send.bind(null, "followUp");
+$("btnSteer").onclick = send.bind(null, "steer");
+async function send(whenBusy) {
+  const input = $("input");
+  const content = input.value.trim();
+  if (!content) return;
+  $("btnSend").disabled = $("btnSteer").disabled = true;
+  try {
+    await api("/api/ask", { method: "POST", body: JSON.stringify({ content, whenBusy }) });
+    input.value = ""; input.style.height = "auto";
+    followBottom = true; // 自己发言后视图跳到最新
+    $("transcript").scrollTo({ top: $("transcript").scrollHeight, behavior: "smooth" });
+  } catch (err) { toast("提交失败：" + err.message); }
+  finally { $("btnSend").disabled = $("btnSteer").disabled = false; }
+}
+$("btnAbort").onclick = async () => { try { await api("/api/abort", { method: "POST", body: "{}" }); } catch (err) { toast(err.message); } };
+$("btnCompact").onclick = async () => {
+  const instructions = prompt("压缩指令（可留空）：");
+  if (instructions === null) return;
+  try { await api("/api/compact", { method: "POST", body: JSON.stringify({ instructions }) }); toast("压缩任务已提交"); }
+  catch (err) { toast(err.message); }
+};
+$("btnReset").onclick = async () => {
+  if (!confirm("重置后模型将看不到更早的条目（存储仍保留）。继续？")) return;
+  const note = prompt("交接便签（可留空）：") ?? undefined;
+  try { await api("/api/reset", { method: "POST", body: JSON.stringify({ note }) }); toast("已提交重置"); }
+  catch (err) { toast(err.message); }
+};
+// 任务图：点击切换显示/隐藏；打开时随 render 每 3s 自动刷新
+let tasksOpen = false;
+let lastTasksFetch = 0;
+async function refreshTasks() {
+  try {
+    const { graph } = await api("/api/tasks");
+    const nodes = Object.values(graph?.tasks ?? {});
+    const p = $("tasksPanel");
+    if (!tasksOpen) { p.style.display = "none"; return; }
+    p.style.display = "";
+    $("tasksBody").innerHTML = nodes.length
+      ? nodes.map((n) => `<div class="kv"><b>#${esc(n.id)}</b> ${esc(n.kind)} · ${esc(n.state.status)}${n.state.phase ? ` (${esc(n.state.phase)})` : ""}${n.background ? " · 后台" : ""}${n.owner ? ` · owner #${esc(n.owner)}` : ""}</div>`).join("")
+      : `<div class="muted">（无活跃任务）</div>`;
+  } catch (err) { toast(err.message); }
+}
+$("btnTasks").onclick = async () => {
+  tasksOpen = !tasksOpen;
+  if (!tasksOpen) { $("tasksPanel").style.display = "none"; return; }
+  lastTasksFetch = Date.now();
+  await refreshTasks();
+};
+function maybeRefreshTasks() {
+  if (!tasksOpen || Date.now() - lastTasksFetch < 3000) return;
+  lastTasksFetch = Date.now();
+  void refreshTasks();
+}
+$("input").addEventListener("keydown", (ev) => { if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); send("followUp"); } });
+$("input").addEventListener("input", (ev) => { ev.target.style.height = "auto"; ev.target.style.height = Math.min(160, ev.target.scrollHeight) + "px"; });
+
+// ---------- 连接 ----------
+let renderTimer = null;
+function scheduleRender(view) {
+  lastView = view;
+  if (renderTimer) return; // 合并流式期间的高频 commit（~100ms/次），120ms 节流重绘
+  renderTimer = setTimeout(() => { renderTimer = null; render(lastView); }, 120);
+}
+function connect() {
+  const es = new EventSource("/api/events");
+  es.addEventListener("view", (ev) => { $("conn").textContent = "已连接"; scheduleRender(JSON.parse(ev.data)); });
+  es.onerror = () => { $("conn").textContent = "重连中…"; };
+}
+connect();
+</script>
+</body>
+</html>
