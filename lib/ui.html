@@ -29,7 +29,17 @@
     background: rgba(255,255,255,.12); color: #eef0ff; border: 1px solid rgba(255,255,255,.25);
     border-radius: 8px; padding: 4px 12px; font-size: 12.5px; cursor: pointer;
   }
+  header.top select {
+    background: rgba(255,255,255,.12); color: #eef0ff; border: 1px solid rgba(255,255,255,.25);
+    border-radius: 8px; padding: 4px 8px; font-size: 12.5px; max-width: 160px; cursor: pointer;
+  }
+  header.top select option { color: #1a2233; }
   header.top button:hover { background: rgba(255,255,255,.22); }
+  #approvalBody .kv { margin: 8px 0; }
+  #approvalBody pre.code { margin: 4px 0; }
+  #approvalBody .mini { border: 1px solid var(--line); background: var(--paper); color: var(--soft); border-radius: 8px; padding: 3px 10px; font-size: 12px; cursor: pointer; margin-right: 6px; }
+  #approvalBody .mini.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  #approvalBody .mini.danger { color: var(--red); border-color: #f2c4c0; }
 
   .toolbar {
     display: flex; flex-wrap: wrap; gap: 8px; align-items: center; flex: none;
@@ -142,10 +152,15 @@
 <header class="top">
   <h1>Pi Durable Host</h1>
   <span id="status" class="badge idle">空闲</span>
-  <span id="model" class="badge dim">…</span>
+  <select id="sessionSel" title="会话（每个会话一个持久 conversation）"></select>
+  <button id="btnNewSession" title="新建会话">＋</button>
+  <button id="btnDelSession" title="删除当前会话（default 除外）">🗑</button>
+  <select id="modelSel" title="模型"></select>
   <span id="cwd" class="badge dim"></span>
   <span class="spacer"></span>
   <span id="conn" class="badge dim">连接中…</span>
+  <button id="btnBackup" title="VACUUM INTO 快照到 data/backups/">备份</button>
+  <button id="btnRestart" title="热重启 daemon（运行中的 run 由新进程 resume）">重启</button>
   <button id="btnTasks">任务图</button>
   <button id="btnCompact">压缩</button>
   <button id="btnReset">重置上下文</button>
@@ -169,6 +184,9 @@
     </div>
     <div class="panel" id="inboxPanel" style="display:none">
       <h3>排队中</h3><div id="inboxBody"></div>
+    </div>
+    <div class="panel" id="approvalPanel" style="display:none">
+      <h3>审批（host-guard）</h3><div id="approvalBody"></div>
     </div>
     <div class="panel">
       <h3>用量与会话</h3><div id="usageBody" class="muted">…</div>
@@ -397,7 +415,12 @@ function render(view) {
   $("btnAbort").disabled = !busy;
 
   const agent = view.docs?.["pi.agent"] ?? {};
-  $("model").textContent = agent.model ? `${agent.model.provider}/${agent.model.modelId ?? ""}` : "model ?";
+  const modelSel = $("modelSel");
+  if (agent.model) {
+    const id = agent.model.modelId ?? "";
+    if (modelSel.dataset.loaded === "1" && !modelSel.matches(":focus") && [...modelSel.options].some((o) => o.value === id)) modelSel.value = id;
+    modelSel.dataset.known = id;
+  }
   $("cwd").textContent = agent.cwd ?? "";
 
   const entries = (view.entries ?? []).filter((e) => e.kind !== "head");
@@ -614,6 +637,94 @@ function maybeRefreshTasks() {
 $("input").addEventListener("keydown", (ev) => { if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); send("followUp"); } });
 $("input").addEventListener("input", (ev) => { ev.target.style.height = "auto"; ev.target.style.height = Math.min(160, ev.target.scrollHeight) + "px"; });
 
+// ---------- 会话 / 模型 / 审批 / 备份 / 重启 ----------
+function renderSessions(payload) {
+  const sel = $("sessionSel");
+  sel.innerHTML = payload.sessions.map((s) => `<option value="${esc(s.name)}"${s.name === payload.current ? " selected" : ""}>${esc(s.name)}</option>`).join("");
+  document.title = `Pi Durable · ${payload.current}`;
+}
+async function loadSessions() { try { renderSessions(await api("/api/sessions")); } catch {} }
+$("sessionSel").onchange = async () => {
+  try { await api("/api/sessions", { method: "POST", body: JSON.stringify({ action: "switch", name: $("sessionSel").value }) }); expanded.clear(); hasRendered = false; }
+  catch (err) { toast("切换失败：" + err.message); loadSessions(); }
+};
+$("btnNewSession").onclick = async () => {
+  const name = prompt("新会话名（字母/数字开头，可含 _ . -）：");
+  if (!name) return;
+  try { await api("/api/sessions", { method: "POST", body: JSON.stringify({ action: "new", name }) }); expanded.clear(); hasRendered = false; toast(`已创建并切换到 ${name}`); }
+  catch (err) { toast("创建失败：" + err.message); }
+};
+$("btnDelSession").onclick = async () => {
+  const name = $("sessionSel").value;
+  if (name === "default") { toast("default 会话不可删除"); return; }
+  if (!confirm(`删除会话 ${name}？（conversation 数据仍在存储中，仅解除映射）`)) return;
+  try { await api("/api/sessions", { method: "POST", body: JSON.stringify({ action: "delete", name }) }); toast(`已删除 ${name}`); }
+  catch (err) { toast(err.message); }
+};
+
+async function loadModels() {
+  try {
+    const { source, default: def, models } = await api("/api/models");
+    const sel = $("modelSel");
+    sel.innerHTML = models.map((m) => `<option value="${esc(m.id)}"${m.id === def.modelId ? " selected" : ""}>${esc(m.id)}</option>`).join("");
+    sel.dataset.provider = def.provider;
+    sel.title = source;
+    if (sel.dataset.known) sel.value = sel.dataset.known;
+    sel.dataset.loaded = "1";
+  } catch {}
+}
+$("modelSel").onchange = async () => {
+  const sel = $("modelSel");
+  try { await api("/api/config", { method: "POST", body: JSON.stringify({ model: { provider: sel.dataset.provider, modelId: sel.value } }) }); toast(`模型已切换：${sel.value}`); }
+  catch (err) { toast("切换失败：" + err.message); loadModels(); }
+};
+
+let approvalsHtml = "";
+async function refreshApprovals() {
+  try {
+    const { approved, pending } = await api("/api/approvals");
+    const panel = $("approvalPanel");
+    if (!pending.length && !approved.length) { panel.style.display = "none"; approvalsHtml = ""; return; }
+    let html = "";
+    for (const item of pending) {
+      html += `<div class="kv"><b>⛔ ${esc(item.why ?? "危险命令")}</b> · ${esc(item.blockedAt ?? "")}
+        <pre class="code">${esc(item.command)}</pre>
+        <button class="mini primary" data-approve="${esc(item.command)}">批准</button><button class="mini" data-dismiss="${esc(item.command)}">忽略</button></div>`;
+    }
+    for (const [i, item] of approved.entries()) {
+      html += `<div class="kv">✅ <code class="md-inline">${esc(item.command)}</code> <button class="mini danger" data-revoke="${i + 1}">撤销</button></div>`;
+    }
+    if (html === approvalsHtml) return;
+    approvalsHtml = html;
+    panel.style.display = "";
+    $("approvalBody").innerHTML = html;
+  } catch {}
+}
+$("approvalBody").addEventListener("click", async (ev) => {
+  const btn = ev.target.closest("button");
+  if (!btn) return;
+  try {
+    if (btn.dataset.approve) { await api("/api/approve", { method: "POST", body: JSON.stringify({ command: btn.dataset.approve }) }); toast("已批准，可让 agent 重试原命令"); }
+    else if (btn.dataset.dismiss) { await api("/api/approvals/dismiss", { method: "POST", body: JSON.stringify({ command: btn.dataset.dismiss }) }); }
+    else if (btn.dataset.revoke) { await api("/api/approve/revoke", { method: "POST", body: JSON.stringify({ index: +btn.dataset.revoke }) }); }
+    approvalsHtml = ""; await refreshApprovals();
+  } catch (err) { toast(err.message); }
+});
+setInterval(refreshApprovals, 5000);
+refreshApprovals(); loadSessions(); loadModels();
+
+$("btnBackup").onclick = async () => {
+  try { const { file } = await api("/api/backup", { method: "POST", body: "{}" }); toast("已备份：" + file); }
+  catch (err) { toast(err.message); }
+};
+$("btnRestart").onclick = async () => {
+  if (!confirm("热重启 daemon？运行中的 run 会由后继进程 resume 接续，SSE 自动重连。")) return;
+  $("conn").textContent = "重启中…";
+  try { await api("/api/restart", { method: "POST", body: "{}" }); }
+  catch (err) { toast("重启请求失败：" + err.message); }
+  // EventSource 自动重连到新 daemon；收到 view 事件后 conn 恢复"已连接"
+};
+
 // ---------- 连接 ----------
 let renderTimer = null;
 function scheduleRender(view) {
@@ -623,6 +734,7 @@ function scheduleRender(view) {
 }
 function connect() {
   const es = new EventSource("/api/events");
+  es.addEventListener("session", (ev) => { renderSessions(JSON.parse(ev.data)); });
   es.addEventListener("view", (ev) => { $("conn").textContent = "已连接"; scheduleRender(JSON.parse(ev.data)); });
   es.onerror = () => { $("conn").textContent = "重连中…"; };
 }
