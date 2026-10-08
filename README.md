@@ -15,15 +15,22 @@ SQLite WAL 已实测可用，性能比 ext4 慢，重负载可考虑把 `data/` 
 
 | 路径 | 说明 |
 |---|---|
-| `host.js` | host CLI（ask / history / wait / status / tasks / approve / serve / config） |
-| `lib/lock.js` | 单写者锁（PID 存活检查，崩溃遗留的锁自动接管） |
-| `lib/extensions.js` | 自建扩展：host-project-context / host-guard / host-team（subagent） |
-| `lib/server.js` | 常驻 daemon：HTTP + SSE 实时视图 + REST API |
-| `lib/ui.html` | Web UI（会话实时视图、发送/转向/中止/压缩/重置/任务图） |
+| `host.js` | host CLI（ask / history / wait / status / tasks / sessions / approve / backup / timing / restart / serve / config） |
+| `lib/lock.js` | 单写者锁（PID 存活检查，崩溃遗留的锁自动接管；`--takeover` 可等待前任退出） |
+| `lib/extensions.js` | 自建扩展：host-project-context / host-guard（拦截入待批清单）/ host-team（subagent） |
+| `lib/server.js` | 常驻 daemon：HTTP + SSE 实时视图 + REST API（含会话/审批/备份/热重启） |
+| `lib/ui.html` | Web UI（会话切换、模型切换、审批面板、实时视图、任务图） |
+| `lib/models.js` | 多主机模型层（pi 配置自适应 / Ark relay 回退） |
+| `lib/sessions.js` | 命名会话 ↔ conversation 映射（`data/sessions.json`） |
+| `lib/approvals.js` | 批准清单 + 待批清单（guard / CLI / daemon / UI 共用） |
+| `lib/backup.js` | `VACUUM INTO` 一致性快照（daemon 内多连接安全，无需暂停 run） |
+| `lib/daemon.js` | serve.json 发现 + CLI→daemon HTTP 转发 |
 | `data/session.sqlite` | 持久化存储（WAL，进程崩溃可恢复） |
 | `data/host.lock` | 单写者锁文件（存活期间持有，退出自动释放） |
-| `data/approvals.json` | 危险命令批准清单（`approve` 命令维护，hook 每次调用实时读取） |
-| `data/tool-timing.log` | 工具调用耗时日志（host-guard 的计时 wrap 追加） |
+| `data/serve.json` | daemon 运行信息（pid/port/host；CLI 据此转发） |
+| `data/approvals*.json` | 批准清单 / 待批清单（`approve` 命令或 UI 维护，guard 每次调用实时读取） |
+| `data/tool-timing.log` | 工具调用耗时日志（host-guard 的计时 wrap 追加；`timing` 命令汇总） |
+| `data/backups/` | `backup` 快照（默认保留最新 20 份） |
 | `workspace/` | agent 工具的默认 cwd（bash/write/edit 在此工作） |
 
 ## 依赖
@@ -32,6 +39,7 @@ SQLite WAL 已实测可用，性能比 ext4 慢，重负载可考虑把 `data/` 
 - `@earendil-works/pi-durable` + `@earendil-works/pi-ai` + `@earendil-works/chord`（npm 已装，均 1.1.0，与 pi CLI v1.1.0 同代）
 - 可选 `PI_DURABLE_TOKEN` —— daemon API 鉴权令牌（绑定非回环地址时强烈建议设置）
 - 可选 `PI_DURABLE_HOST` —— serve 默认监听地址（默认 `127.0.0.1`）
+- 可选 `PI_DURABLE_DATA_DIR` —— 覆盖数据目录（默认 `<repo>/data`；测试/多实例用）
 
 ## 模型后端（多主机兼容）
 
@@ -50,79 +58,85 @@ SQLite WAL 已实测可用，性能比 ext4 慢，重负载可考虑把 `data/` 
 ## 单写者模型（重要）
 
 pi-durable 存储无跨进程锁：**一个存储同一时刻只能被一个进程打开**。
-host.js 的每个命令都会持有 `data/host.lock`（记录 PID）直到退出；锁的持有者还活着时其他进程
+host.js 的每个存储命令都会持有 `data/host.lock`（记录 PID）直到退出；锁的持有者还活着时其他进程
 拒绝启动，持有者已死时自动接管。**推荐姿势：跑一个 `serve` 常驻进程作为唯一持有者**，
-其余一切（人、脚本、UI）通过它的 HTTP 接口使用；此时所有 CLI 命令都会被拒绝。
+其余一切（人、脚本、UI、host.js 自身）通过它的 HTTP 接口使用：serve 运行期间，
+CLI 命令（ask / history / status / tasks / sessions / approve / config / backup / restart / wait）
+检测到 daemon 后**自动转发**，不再被锁拒绝。
+
+## 命名会话
+
+每个会话名对应一个独立持久 conversation（`data/sessions.json`）；`default` 即 root conversation（id 1），
+历史数据无缝兼容。daemon 的 UI/API/SSE 全部跟随"当前会话"，切换即时生效；
+`ask --session <name>` 可以直接对非当前会话提问。`sessions new|switch|delete` 管理映射
+（delete 只解除映射，conversation 数据保留在存储中）。
+
+## 危险命令审批（host-guard）
+
+guard 拦截危险 bash 命令时，命令进入 `data/approvals-pending.json` 待批清单：
+
+- **Web UI**：侧栏「审批」面板一键「批准 / 忽略」，已批准项可「撤销」（5s 轮询刷新）
+- **CLI**：`node host.js approve -- <命令>`（批准并清待批）/ `--list` / `--revoke n`
+- 批准/撤销对运行中的 daemon 实时生效（guard 每次调用重读文件）；批准后让 agent 重试原命令即可
+- 允许前缀通配：批准 `git push origin*` 会放行所有以它开头的命令
+
+## 备份与热重启
+
+- `node host.js backup` / `POST /api/backup`：daemon 在自己进程内开第二个 SQLite 连接执行
+  `VACUUM INTO`，拿到与 WAL 一致的快照，不暂停任何 run；默认存 `data/backups/`，保留最新 20 份
+- `node host.js restart` / `POST /api/restart`：**热重启**。daemon 先派生 detached 后继进程
+  （`serve --takeover`，最长等锁 60s），再优雅关闭存储退出；后继接管锁后 `resume()` 接续所有
+  未完成的 run（包括正在生成的回答）。Web UI 的 SSE 会自动重连。典型用途：改完 host 代码后零数据损失升级
+- 踩坑记录：daemon 停止时，运行中的工具调用会被执行环境 `killProcessTree` 按**进程组** SIGKILL——
+  从工具里 nohup 出来的后台脚本会一起被杀（nohup 只免 SIGHUP，不换进程组；且 macOS 无 setsid）。
+  需要跨 daemon 存活的工作必须独立会话（如 `node -e spawn(...,{detached:true})`），
+  或干脆走 `/api/restart`（后继由 daemon 自身派生，天然不在工具进程树里）
+- `node host.js timing [n]`：tool-timing.log 汇总（每工具 n / avg / p50 / p95 / max）+ 最近 n 条
 
 ## 用法
 
 ```bash
-cd /mnt/d/ws/project/wsl-ws/ai/vibe-ws/pi-durable
-
 # 常驻 daemon（推荐）：Web UI + SSE 实时视图 + REST API
-node host.js serve [端口=7600] [--host 127.0.0.1]
+node host.js serve [端口=7600] [--host 127.0.0.1] [--takeover]
 #   UI:        http://localhost:7600/
-#   POST /api/ask      { content, whenBusy?: "followUp"|"steer"|"reject", wait?: bool, requestId? }
+#   POST /api/ask      { content, whenBusy?: "followUp"|"steer"|"reject", wait?: bool, requestId?, session? }
 #   POST /api/steer → 用 /api/ask 的 whenBusy:"steer"
 #   POST /api/abort    中止当前运行（后台任务不受影响）
 #   POST /api/compact  { instructions? }
 #   POST /api/reset    { note? }
-#   POST /api/config   { cwd? / instructions? / model? }
-#   GET  /api/state | /api/events(SSE) | /api/tasks | /api/usage
+#   POST /api/config   { cwd? / instructions? / model? }   ← UI 模型切换器也走这里
+#   POST /api/sessions { action: new|switch|delete, name }
+#   POST /api/approve  { command } | /api/approve/revoke { index } | /api/approvals/dismiss { command }
+#   POST /api/backup   { file? }
+#   POST /api/restart  热重启（见上）
+#   GET  /api/state | /api/events(SSE) | /api/history | /api/status | /api/tasks | /api/usage
+#   GET  /api/models | /api/sessions | /api/approvals | /api/submission?id= | /api/entry?id=
 
-# 一次性 CLI（serve 运行时会被锁拒绝）
-node host.js ask "..." [--fresh]  # 提交 prompt，等 run 结束，打印回答
+# CLI（daemon 运行时自动转发到 daemon；未运行时本地直连存储）
+node host.js ask "..." [--fresh] [--session s]  # 提交 prompt，等 run 结束，打印回答
                                   # 同内容重复 ask 幂等复用（requestId=内容哈希）；--fresh 强制新提交
-node host.js history [n]          # 打印最近 n 条 transcript（默认 50）
+node host.js history [n] [--session s]          # 打印最近 n 条 transcript（默认 50）
 node host.js wait [秒]            # 有未完成的 run（如上个进程被杀）时等它走完；开机/部署后先跑一次
 node host.js status               # 会话状态：busy / 生成重试 / 工具 / 压缩 / inbox / agent / 用量 / 活任务
 node host.js tasks                # 实时任务图（所有权、等待关系、后台标记）
-node host.js approve -- <命令>    # 批准一条危险命令（--list 查看 / --revoke n 撤销）；daemon 运行中实时生效
-node host.js config               # 把存储的 agent cwd/model 重置为本目录当前值（换目录后跑一次）
+node host.js sessions [new|switch|delete <name>]  # 命名会话管理（default=root conversation）
+node host.js approve -- <命令>    # 批准危险命令（--list 查看 / --revoke n 撤销）；实时生效
+node host.js backup [文件]        # VACUUM INTO 一致性快照
+node host.js timing [n]           # 工具耗时汇总
+node host.js restart              # 热重启 daemon（后继进程 resume 所有 run）
+node host.js config               # 把存储的 agent cwd/model 重置为本目录当前值
 ```
 
-## 自建扩展（lib/extensions.js）
+## Web UI（http://localhost:7600/）
 
-| 扩展 | 机制 | 说明 |
-|---|---|---|
-| `host-project-context` | section | 把 `workspace/AGENTS.md`（存在时）注入 system prompt；内容稳定，prompt cache 不受影响 |
-| `host-guard` | hook + wraps | 危险 bash（sudo / 递归删除 / 磁盘写入 / 强推 / 管道执行远程脚本等 12 类）先拦截：未批准的命令向模型返回 block + 批准指引；`approve` 后放行。四个工具全部计时并追加到 `data/tool-timing.log` |
-| `host-team` | 工具 | `subagent` 工具：创建被当前调用拥有的子会话（replay-safe + requestId，崩溃重跑恰好一次），等待并返回其回答；UI 可通过 details 把子会话挂到调用下 |
+- 顶栏：会话下拉（切换/新建/删除）、模型下拉（即改即生效，来自本机模型目录）、备份、热重启
+- 主区：按 run 分组的对话流（搜索/过滤/展开），工具调用卡片配对渲染，流式生成实时显示
+- 侧栏：实时运行、排队 inbox、**审批面板（待批一键批准）**、用量、任务图
+- SSE 断线自动重连（daemon 重启后视图无缝恢复）
 
-## 持久化与恢复语义（已实测）
+## 部署节奏（改代码后）
 
-- 每次打开存储都调用 `harness.resume()`——任何进程中断的 run 由下一个进程自动接续
-  （daemon 启动时若发现未完成 run 会在日志中提示）。
-- 被中断的非 replay-safe 工具按文档给模型 `interrupted` 错误结果，模型自行决定补救方式
-  （实测：sleep 25 被 kill -9 打断 → 模型改用后台执行完成任务）。
-- 自动压缩已启用（reserve 16384 / background 32768 / keepRecent 20000 tokens）：
-  上下文接近 200k 窗口时后台生成摘要，仅在放不下时阻塞下一请求；transcript 小于阈值时
-  压缩任务按规范结算为 stale、不落条目（已实测）。
-- steer / follow-up / inbox、fork、defineDoc、后台任务等库能力尚未全部使用，见报告第 8 章能力地图。
-
-## 快速验证记录（2026-10-08）
-
-1. 单写者锁：活持有者拒绝 + 死锁接管，均符合预期
-2. daemon：`/api/state`、`/api/events`（SSE 快照+增量）、`/api/tasks`、UI 均正常
-3. 真实模型往返：CLI ask 与 `POST /api/ask wait:true` 均成功（relay, thinking high）
-4. requestId 幂等：同 requestId 两次提交 → 同一 submission，模型只执行一次
-5. host-guard：`rm -rf ./guard-test` 被拦截 → 模型转述拦截信息 → 前缀批准 `rm -rf ./guard-test*` → 放行执行成功
-6. subagent：子会话 conv 107（owner_task=pi.tool #106）独立完成任务并回报；任务链在 taskGraph 可见
-7. steer：sleep 15 运行中插入转向指令 → 当前工具轮结束后并入同一 run 执行
-8. 崩溃恢复：daemon 被 SIGTERM 时 run 未完成 → 新进程 `wait` 接管 → 回答落库
-
-## macOS 兼容改造（2026-10-08）
-
-1. 模型层抽为 `lib/models.js`：本机自动选中 `zai-coding-cn/glm-5.3`（读 `~/.pi/agent` 配置），WSL 走 ark 需 relay 令牌；`PI_DURABLE_PROVIDER=ark node host.js status` 验证 ark 路径可用
-2. 真实往返：`node host.js ask` 经 zai GLM-5.3（openai-completions + zai thinking 格式）成功回答，持久化/锁/恢复链路正常
-3. host-guard 增加 macOS 磁盘模式（/dev/disk*、/dev/rdisk*、diskutil eraseDisk/apfs resizeContainer/unmountDisk 等），12 例正则全部通过，`diskutil info/verify` 等只读命令不受影响
-4. Node v24.5.0（macOS Homebrew）实测 node:sqlite 可用，仅 ExperimentalWarning
-
-## 已知限制
-
-- relay 只回传 cacheRead，cacheWrite 恒为 0（费用统计偏低，model cost 全填 0；仅影响 ark 路径，zai 路径用量按 models-store 计）
-- daemon 与 CLI 二选一（单写者锁）；daemon 未做持久化队列之外的多副本/HA
-- Web UI 为单会话（根会话）视图；多会话/子会话面板待建（taskGraph 与 details 已可支撑）
-- 环境隔离（per-conversation 容器 ExecutionEnv）未实现，工具直接跑在本机 workspace/
-- Codemode 无关；这是独立于 pi 交互式 CLI 的第二套运行时（库形态 + 本 host 的 daemon 形态）
-- Windows 部署可用 `createPowerShellTool()`（pi-durable 1.0.4+）替换/追加 bash 工具，未配置
+```bash
+node host.js restart      # 热重启：后继进程接管，未完成 run 自动 resume
+node host.js status       # 确认新 daemon 状态
+```

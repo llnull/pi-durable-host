@@ -2,8 +2,8 @@
   "name": "pi-durable-host",
   "private": true,
   "type": "module",
-  "version": "0.2.0",
-  "description": "Local Pi Durable host: durable conversations on SQLite, Ark relay model, CodingTools, guard/project-context/subagent extensions, single-writer lock, daemon with web UI",
+  "version": "0.3.0",
+  "description": "Local Pi Durable host: durable conversations on SQLite, adaptive model layer (pi config / Ark relay), CodingTools + guard/project-context/subagent extensions, single-writer lock, daemon with web UI, sessions, approvals, backup, hot restart",
   "scripts": {
     "ask": "node host.js ask",
     "history": "node host.js history",
