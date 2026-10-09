@@ -39,7 +39,7 @@ import { startServer } from "./lib/server.js";
 import { detectDaemon, daemonApi } from "./lib/daemon.js";
 import { collectStatus, printHistory, printStatus, textOf } from "./lib/format.js";
 import { approveCommand, pendingFileOf, readApprovals, readPending, revokeApprovalAt } from "./lib/approvals.js";
-import { backupStorageFile } from "./lib/backup.js";
+import { backupStorageFile, rotateLog } from "./lib/backup.js";
 import { DEFAULT_SESSION, assertSessionName, readSessions, sessionsFile, sessionConversationId, writeSessions } from "./lib/sessions.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -661,6 +661,9 @@ async function cmdServe(args) {
 	if ((host === "0.0.0.0" || host === "::") && !token) {
 		console.error("[serve] 警告：绑定到所有地址且未设置 PI_DURABLE_TOKEN，任何能访问该端口的人都可以驱动本机 agent。");
 	}
+	// Log hygiene (#27 P2): cap both append-only logs at 1MB per generation.
+	rotateLog(SERVE_LOG);
+	rotateLog(TIMING_LOG);
 	const context = BACKGROUND_CONTEXT;
 	const harness = await openHarness({ takeover });
 	try {
