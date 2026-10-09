@@ -17,8 +17,11 @@
   body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.65 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; overflow-wrap: break-word; height: 100vh; height: 100dvh; display: flex; flex-direction: column; overflow: hidden; }
   header.top {
     display: flex; flex-wrap: wrap; align-items: center; gap: 10px; flex: none;
-    padding: 10px 18px; background: #1e1b4b; color: #eef0ff;
+    padding: 10px max(var(--pad-x), calc((100% - var(--shell-max)) / 2 + var(--pad-x)));
+    background: #1e1b4b; color: #eef0ff;
   }
+  /* 专注模式下 header 也对齐到阅读列轴线 */
+  body.layout-focus header.top { padding-left: max(var(--pad-x), calc((100% - var(--focus-max)) / 2 + var(--pad-x))); padding-right: max(var(--pad-x), calc((100% - var(--focus-max)) / 2 + var(--pad-x))); }
   header.top h1 { font-size: 15px; margin: 0 8px 0 0; font-weight: 650; }
   .badge { border-radius: 999px; padding: 1px 10px; font-size: 12px; font-weight: 600; }
   .badge.busy { background: var(--amber-bg); color: var(--amber); }
@@ -43,7 +46,7 @@
 
   .toolbar {
     display: flex; flex-wrap: wrap; gap: 8px; align-items: center; flex: none;
-    width: 100%; max-width: var(--shell-max); margin: 0 auto; padding: 12px 14px 8px;
+    width: 100%; max-width: var(--shell-max); margin: 0 auto; padding: 12px var(--pad-x) 8px;
     background: var(--bg);
   }
   .toolbar input[type=search] {
@@ -58,17 +61,17 @@
   .toolbar .mini { border: 1px solid var(--line); background: var(--paper); color: var(--soft); border-radius: 9px; padding: 5px 10px; font-size: 12.5px; cursor: pointer; }
 
   /* --shell-max：内容壳宽度档位（宽屏逐级放宽）；专注模式（body.layout-focus）收起侧栏并收窄为阅读列宽 */
-  :root { --shell-max: 1200px; --focus-max: 1000px; }
+  :root { --shell-max: 1200px; --focus-max: 1000px; --pad-x: 14px; }
   @media (min-width: 1440px) { :root { --shell-max: 1440px; } }
   @media (min-width: 1920px) { :root { --shell-max: 1600px; } }
   /* minmax(0,1fr)：断开 min-content 向轨道上传，防止长代码行/表格把整页撑宽；flex:1 占满剩余高度 */
-  .layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 300px); gap: 14px; width: 100%; max-width: var(--shell-max); margin: 6px auto 0; padding: 0 14px 14px; flex: 1; min-height: 0; }
+  .layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 300px); gap: 14px; width: 100%; max-width: var(--shell-max); margin: 6px auto 0; padding: 0 var(--pad-x) 14px; flex: 1; min-height: 0; }
   @media (max-width: 900px) { .layout { display: flex; flex-direction: column; } #transcript { flex: 1; min-height: 0; } .side { flex: none; max-height: 38%; } }
-  @media (max-width: 560px) { .layout { padding: 0 10px 10px; } .run-stats { display: none; } .msg .bubble { max-width: 94%; } }
+  @media (max-width: 560px) { :root { --pad-x: 10px; } .layout { padding: 0 var(--pad-x) 10px; } .run-stats { display: none; } .msg .bubble { max-width: 94%; } }
   /* 专注模式：侧栏收起，主列收窄为阅读列宽并居中 */
   body.layout-focus .layout { grid-template-columns: minmax(0, 1fr); max-width: var(--focus-max); }
+  body.layout-focus .toolbar { max-width: var(--focus-max); }
   body.layout-focus .side { display: none; }
-  body.layout-focus #transcript .run, body.layout-focus #transcript .epoch { max-width: 920px; margin-left: auto; margin-right: auto; }
   .panel { background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; min-width: 0; max-width: 100%; }
   #transcript { overflow-y: auto; scrollbar-gutter: stable; min-height: 0; padding-bottom: 18px; }
   .side { display: flex; flex-direction: column; gap: 14px; min-width: 0; min-height: 0; overflow-y: auto; }
@@ -146,12 +149,21 @@
   .live-block { border: 1px dashed var(--accent-line); border-radius: 10px; padding: 8px 12px; margin-bottom: 10px; background: #fbfcff; }
   .live-block .t { font-size: 12px; color: var(--accent); font-weight: 600; margin-bottom: 3px; }
 
-  .composer { flex: none; background: var(--bg); border-top: 1px solid var(--line); padding: 10px 14px 12px; }
+  .composer { flex: none; background: var(--bg); border-top: 1px solid var(--line); padding: 10px var(--pad-x) 12px; }
+  /* 输入框与内容列同轴：左边缘 = 聊天主列左边缘，宽度 = 主列宽（shell − 2×pad − 300 侧栏 − 14 间距） */
   .composer .inner {
-    max-width: 1172px; margin: 0 auto; background: var(--paper);
+    margin-left: max(var(--pad-x), calc((100% - var(--shell-max)) / 2 + var(--pad-x)));
+    width: calc(min(100%, var(--shell-max)) - var(--pad-x) * 2 - 314px); margin-right: auto; background: var(--paper);
     border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 4px 18px rgba(26,34,51,.08);
     padding: 8px 12px; transition: border-color .15s, box-shadow .15s;
   }
+  @media (min-width: 901px) {
+    body.layout-focus .composer .inner {
+      margin-left: max(var(--pad-x), calc((100% - var(--focus-max)) / 2 + var(--pad-x)));
+      width: calc(min(100%, var(--focus-max)) - var(--pad-x) * 2);
+    }
+  }
+  @media (max-width: 900px) { .composer .inner { margin: 0 var(--pad-x); width: auto; } }
   .composer .inner:focus-within { border-color: var(--accent); box-shadow: 0 6px 22px rgba(79,70,229,.16); }
   .composer textarea {
     display: block; width: 100%; resize: none; border: none; outline: none; background: transparent;
