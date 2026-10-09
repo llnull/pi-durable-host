@@ -149,6 +149,8 @@
   .filelink { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; word-break: break-all; }
   .filelink:hover { background: var(--accent-soft); }
   #filesBody .kv { margin: 3px 0; }
+  /* 侧栏动态内容面板限高，超出部分内部滚动，避免把其它面板挤到页尾 */
+  #liveBody, #inboxBody, #filesBody { max-height: 38vh; overflow-y: auto; }
 </style>
 </head>
 <body>
