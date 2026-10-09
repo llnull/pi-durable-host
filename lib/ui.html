@@ -146,6 +146,9 @@
   .composer button:disabled { opacity: .45; cursor: not-allowed; }
   .toast { position: fixed; top: 54px; left: 50%; transform: translateX(-50%); background: var(--red-bg); color: var(--red); border: 1px solid #f2c4c0; border-radius: 10px; padding: 8px 16px; font-size: 13px; z-index: 99; display: none; }
   #conn { font-size: 12px; }
+  .filelink { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; word-break: break-all; }
+  .filelink:hover { background: var(--accent-soft); }
+  #filesBody .kv { margin: 3px 0; }
 </style>
 </head>
 <body>
@@ -162,6 +165,7 @@
   <button id="btnBackup" title="VACUUM INTO 快照到 data/backups/">备份</button>
   <button id="btnRestart" title="热重启 daemon（运行中的 run 由新进程 resume）">重启</button>
   <button id="btnTasks">任务图</button>
+  <button id="btnFiles" title="浏览 agent 工作区文件（点击在新窗口打开）">文件</button>
   <button id="btnCompact">压缩</button>
   <button id="btnReset">重置上下文</button>
 </header>
@@ -194,6 +198,9 @@
     <div class="panel" id="tasksPanel" style="display:none">
       <h3>任务图</h3><div id="tasksBody"></div>
     </div>
+    <div class="panel" id="filesPanel" style="display:none">
+      <h3>工作区文件</h3><div id="filesBody"></div>
+    </div>
   </aside>
 </div>
 
@@ -212,6 +219,19 @@
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
+// ---------- 工作区文件链接：把聊天里出现的文件路径变成可点击链接（新窗口打开） ----------
+const FILE_EXT = "html?|htm|css|js|mjs|cjs|json|txt|md|markdown|csv|tsv|log|xml|ya?ml|toml|ini|png|jpe?g|gif|svg|webp|ico|bmp|pdf|mp4|webm|mov|mp3|wav|ogg|wasm|zip|taz?|gz";
+const FILE_RE = new RegExp("(?<![A-Za-z0-9_./()-:])([A-Za-z0-9_./-]*[A-Za-z0-9_-][.](?:" + FILE_EXT + "))(?![A-Za-z0-9_./-])", "gi");
+function toFileHref(raw) {
+  let rel = String(raw);
+  while (rel.startsWith("./")) rel = rel.slice(2);
+  if (rel.toLowerCase().startsWith("workspace/")) rel = rel.slice(10);
+  if (rel.startsWith("/")) rel = rel.slice(1);
+  return "/files/" + encodeURI(rel);
+}
+function linkifyFiles(escapedText) {
+  return String(escapedText ?? "").replace(FILE_RE, (m) => `<a class="filelink" href="${toFileHref(m)}" target="_blank" rel="noopener noreferrer" title="在新窗口打开">${m}</a>`);
+}
 // ---------- 状态 ----------
 const expanded = new Set();   // 展开的 run 的首条 entry id
 let filterMode = "all";
@@ -228,7 +248,7 @@ async function api(path, opts) {
 
 // ---------- 轻量 markdown 渲染（先转义再转换，防 XSS；自包含无依赖） ----------
 function inlineMd(s) {
-  return s
+  return linkifyFiles(s)
     .replace(/`([^`]+)`/g, '<code class="md-inline">$1</code>')
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
     .replace(/(^|[^*\w])\*([^*\n]+)\*/g, "$1<em>$2</em>")
@@ -364,8 +384,12 @@ function toolCardHtml(call, resultEntry, liveTool) {
   const status = resultEntry ? (resultEntry.model?.[0]?.isError ? "err" : "ok") : liveTool ? (liveTool.status === "running" ? "running" : "") : "";
   const label = { err: "❌ 出错", ok: "✅ 完成", running: "⏳ 运行中", "": "· 等待" }[status];
   const dur = resultEntry?.model?.[0]?.durationMs;
-  const args = JSON.stringify(call.arguments ?? {});
+  const argObj = call.arguments ?? {};
+  const args = JSON.stringify(argObj);
   let body = `<details><summary>参数</summary><pre class="code">${esc(args.length > 800 ? args.slice(0, 800) + "…" : args)}</pre></details>`;
+  if ((call.name === "write" || call.name === "edit") && typeof argObj.path === "string" && argObj.path.trim()) {
+    body += `<div class="muted">📄 <a class="filelink" href="${toFileHref(argObj.path)}" target="_blank" rel="noopener noreferrer">在新窗口打开 ${esc(argObj.path)}</a></div>`;
+  }
   const output = resultEntry
     ? asBlocks(resultEntry.model?.[0]?.content).map((b) => (b.type === "text" ? b.text : "")).join("\n")
     : liveTool?.output ?? "";
@@ -380,7 +404,7 @@ function toolCardHtml(call, resultEntry, liveTool) {
 // ---------- 条目渲染（run 展开后）----------
 function entryHtml(e, resultIndex, liveToolByCall) {
   if (e.kind === "pi.user") {
-    return `<div class="msg user"><div class="bubble">${esc(textBlocks(e.model?.[0]?.content))}</div></div>`;
+    return `<div class="msg user"><div class="bubble">${linkifyFiles(esc(textBlocks(e.model?.[0]?.content)))}</div></div>`;
   }
   if (e.kind === "pi.system") {
     return `<details class="syschip"><summary>⚙ 系统提示变更（${esc(Object.keys(e.model?.[0]?.sections ?? {}).join(", ") || "—")}）</summary><pre class="code">${esc(JSON.stringify(e.model?.[0]?.sections ?? e.model?.[0]?.content ?? {}, null, 1).slice(0, 1200))}</pre></details>`;
@@ -508,6 +532,7 @@ function render(view) {
   t.innerHTML = sections.join("") || `<div class="muted">（无匹配内容）</div>`;
   if (nearBottom || followBottom) t.scrollTop = t.scrollHeight; // 内容更新时视图跟随（用户上翻阅读时不拉拽）
   maybeRefreshTasks(); // 任务图面板打开时随渲染节流刷新（内部再限 3s）
+  maybeRefreshFiles();
 
   // 侧栏：实时运行
   const lp = $("livePanel");
@@ -633,6 +658,35 @@ function maybeRefreshTasks() {
   if (!tasksOpen || Date.now() - lastTasksFetch < 3000) return;
   lastTasksFetch = Date.now();
   void refreshTasks();
+}
+// 工作区文件面板：点击切换；打开时随 render 节流刷新（3s），最近修改的排前面
+let filesOpen = false;
+let lastFilesFetch = 0;
+async function refreshFiles() {
+  try {
+    const { base, files } = await api("/api/files");
+    const p = $("filesPanel");
+    if (!filesOpen) { p.style.display = "none"; return; }
+    p.style.display = "";
+    $("filesBody").innerHTML = (files.length
+      ? files.map((f) => {
+          const kb = f.size >= 1024 ? (f.size / 1024).toFixed(1) + " KB" : `${f.size} B`;
+          return `<div class="kv"><a class="filelink" href="/files/${encodeURI(f.path)}" target="_blank" rel="noopener noreferrer">${esc(f.path)}</a> <span class="muted">${kb}</span></div>`;
+        }).join("")
+      : `<div class="muted">（工作区为空）</div>`)
+      + `<div class="muted" style="margin-top:6px">根：${esc(base)}</div>`;
+  } catch (err) { toast(err.message); }
+}
+$("btnFiles").onclick = async () => {
+  filesOpen = !filesOpen;
+  if (!filesOpen) { $("filesPanel").style.display = "none"; return; }
+  lastFilesFetch = Date.now();
+  await refreshFiles();
+};
+function maybeRefreshFiles() {
+  if (!filesOpen || Date.now() - lastFilesFetch < 3000) return;
+  lastFilesFetch = Date.now();
+  void refreshFiles();
 }
 $("input").addEventListener("keydown", (ev) => { if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); send("followUp"); } });
 $("input").addEventListener("input", (ev) => { ev.target.style.height = "auto"; ev.target.style.height = Math.min(160, ev.target.scrollHeight) + "px"; });
