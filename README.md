@@ -51,11 +51,11 @@ clone 到任意目录即可使用；运行时数据都在 `data/`（已 gitignor
 |---|---|---|
 | 1 | `PI_DURABLE_PROVIDER=ark` 或 `=<pi provider id>` | 显式指定 |
 | 2 | 本机 pi 配置（自动，推荐） | `~/.pi/agent/auth.json` 里有 api-key provider 时启用：provider、key、模型目录与默认模型全部跟随 pi CLI 的 settings.json / models-store.json |
-| 3 | Ark relay（自动回退） | 同时具备 `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` **和** `ARK_BASE_URL` 时启用 |
+| 3 | Ark relay（自动回退） | 具备 `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY`，且提供了 relay 地址（环境变量 `ARK_BASE_URL` 或机器本地 `data/ark.json`）时启用 |
 
 - `PI_DURABLE_MODEL` 覆盖默认模型（两条路径都适用）；`PI_DURABLE_PI_DIR` 覆盖 pi agent 目录（默认 `~/.pi/agent`）
 - 专用环境变量 `PI_DURABLE_KEY_<PROVIDER_ID>`（非字母数字转 `_`）优先于 pi 的 auth.json
-- Ark relay 地址通过 `ARK_BASE_URL` 显式提供，无内置默认值（`PI_DURABLE_PROVIDER=ark` 而未设置时直接报错提示）
+- Ark relay 地址属于机器本地配置：`data/ark.json`（`{"baseUrl": "..."}`，`data/` 已 gitignore）或环境变量 `ARK_BASE_URL`（优先）；仓库不含任何机器地址，两者皆无时 ark 路径自动关闭
 - host-guard 的磁盘类拦截同时覆盖 Linux（/dev/sd*、nvme、vd）与 macOS（/dev/disk*、/dev/rdisk*、diskutil 抹除/卸载/缩容）
 
 ## 单写者模型（重要）
