@@ -518,8 +518,10 @@ function render(view) {
   const agent = view.docs?.["pi.agent"] ?? {};
   const modelSel = $("modelSel");
   if (agent.model) {
+    const pid = agent.model.provider ?? "";
     const id = agent.model.modelId ?? "";
-    if (modelSel.dataset.loaded === "1" && !modelSel.matches(":focus") && [...modelSel.options].some((o) => o.value === id)) modelSel.value = id;
+    const opt = [...modelSel.options].find((o) => o.value === id && (o.dataset.provider ?? "") === pid);
+    if (modelSel.dataset.loaded === "1" && !modelSel.matches(":focus") && opt) modelSel.value = id;
     modelSel.dataset.known = id;
   }
   $("cwd").textContent = agent.cwd ?? "";
@@ -825,9 +827,20 @@ $("btnDelSession").onclick = async () => {
 
 async function loadModels() {
   try {
-    const { source, default: def, models } = await api("/api/models");
+    const { source, default: def, providers } = await api("/api/models");
     const sel = $("modelSel");
-    sel.innerHTML = models.map((m) => `<option value="${esc(m.id)}"${m.id === def.modelId ? " selected" : ""}>${esc(m.id)}</option>`).join("");
+    const provs = providers?.length ? providers : [{ id: def.provider, kind: "credential", models: [] }];
+    const kindLabel = { custom: "自定义", credential: "凭证" };
+    sel.innerHTML = provs.map((p) => {
+      const opts = p.models.map((m) => {
+        const bits = [m.name && m.name !== m.id ? m.name : m.id];
+        if (m.contextWindow) bits.push(`${Math.round(m.contextWindow / 1000)}k`);
+        if (m.reasoning) bits.push("推理");
+        const cur = p.id === def.provider && m.id === def.modelId;
+        return `<option value="${esc(m.id)}" data-provider="${esc(p.id)}"${cur ? " selected" : ""}>${esc(bits.join(" · "))}</option>`;
+      }).join("");
+      return `<optgroup label="${esc(p.id)}（${kindLabel[p.kind] ?? p.kind}）">${opts}</optgroup>`;
+    }).join("");
     sel.dataset.provider = def.provider;
     sel.title = source;
     if (sel.dataset.known) sel.value = sel.dataset.known;
@@ -836,7 +849,8 @@ async function loadModels() {
 }
 $("modelSel").onchange = async () => {
   const sel = $("modelSel");
-  try { await api("/api/config", { method: "POST", body: JSON.stringify({ model: { provider: sel.dataset.provider, modelId: sel.value } }) }); toast(`模型已切换：${sel.value}`); }
+  const provider = sel.selectedOptions[0]?.dataset.provider || sel.dataset.provider;
+  try { await api("/api/config", { method: "POST", body: JSON.stringify({ model: { provider, modelId: sel.value } }) }); toast(`模型已切换：${provider}/${sel.value}（当前会话持久生效）`); }
   catch (err) { toast("切换失败：" + err.message); loadModels(); }
 };
 
