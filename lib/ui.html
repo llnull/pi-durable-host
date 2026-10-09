@@ -136,14 +136,48 @@
   .live-block .t { font-size: 12px; color: var(--accent); font-weight: 600; margin-bottom: 3px; }
 
   .composer { flex: none; background: var(--bg); border-top: 1px solid var(--line); padding: 10px 14px 12px; }
-  .composer .inner { max-width: 1172px; margin: 0 auto; display: flex; gap: 8px; }
-  .composer textarea {
-    flex: 1; resize: none; border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px;
-    font: inherit; min-height: 48px; max-height: 160px; background: var(--paper); outline-color: var(--accent);
+  .composer .inner {
+    max-width: 1172px; margin: 0 auto; background: var(--paper);
+    border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 4px 18px rgba(26,34,51,.08);
+    padding: 8px 12px; transition: border-color .15s, box-shadow .15s;
   }
-  .composer button { border: none; border-radius: 12px; padding: 0 20px; font: inherit; font-weight: 600; cursor: pointer; background: var(--accent); color: #fff; }
-  .composer button.steer { background: #0b5aa5; }
-  .composer button:disabled { opacity: .45; cursor: not-allowed; }
+  .composer .inner:focus-within { border-color: var(--accent); box-shadow: 0 6px 22px rgba(79,70,229,.16); }
+  .composer textarea {
+    display: block; width: 100%; resize: none; border: none; outline: none; background: transparent;
+    padding: 4px 6px; font: inherit; min-height: 44px; max-height: 180px; color: var(--ink);
+  }
+  .composer textarea::placeholder { color: var(--faint); }
+  .composer .row { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+  .composer .hint { flex: 1; min-width: 0; font-size: 11.5px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .composer .count { font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; }
+  .state { display: inline-flex; align-items: center; gap: 5px; flex: none; font-size: 11.5px; font-weight: 600; border-radius: 999px; padding: 1px 9px; }
+  .state .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  .state.idle { color: var(--green); background: var(--green-bg); }
+  .state.busy { color: var(--amber); background: var(--amber-bg); }
+  .state.busy .dot { animation: cstate-pulse 1.2s ease-in-out infinite; }
+  @keyframes cstate-pulse { 50% { opacity: .2; } }
+  .cbtn {
+    display: inline-flex; align-items: center; gap: 6px; flex: none;
+    border: 1px solid transparent; border-radius: 10px; padding: 7px 14px;
+    font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+    transition: background .12s, border-color .12s, box-shadow .12s, transform .06s;
+  }
+  .cbtn:active:not(:disabled) { transform: translateY(1px); }
+  .cbtn:disabled { opacity: .45; cursor: not-allowed; }
+  .cbtn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .cbtn svg { width: 15px; height: 15px; flex: none; }
+  .cbtn.primary { background: var(--accent); color: #fff; box-shadow: 0 2px 8px rgba(79,70,229,.35); }
+  .cbtn.primary:hover:not(:disabled) { background: #4338ca; }
+  .cbtn.secondary { background: #eaf2fd; color: #0b5aa5; border-color: #cfe0f7; }
+  .cbtn.secondary:hover:not(:disabled) { background: #dbeafe; }
+  .cbtn.danger { background: transparent; color: var(--red); border-color: var(--line); }
+  .cbtn.danger:hover:not(:disabled) { background: var(--red-bg); border-color: #f2c4c0; }
+  @media (max-width: 640px) {
+    .cbtn .lbl { display: none; }
+    .cbtn { padding: 7px 10px; }
+    .composer .hint { display: none; }
+    .state { display: none; }
+  }
   .toast { position: fixed; top: 54px; left: 50%; transform: translateX(-50%); background: var(--red-bg); color: var(--red); border: 1px solid #f2c4c0; border-radius: 10px; padding: 8px 16px; font-size: 13px; z-index: 99; display: none; }
   #conn { font-size: 12px; }
   .filelink { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; word-break: break-all; }
@@ -208,10 +242,21 @@
 
 <div class="composer">
   <div class="inner">
-    <textarea id="input" placeholder="输入提示词…（Enter 发送，Shift+Enter 换行）"></textarea>
-    <button id="btnSend" title="发送（忙时自动排队为 follow-up）">发送</button>
-    <button id="btnSteer" class="steer" title="插入当前工具轮之后，并入正在运行的工作">转向</button>
-    <button id="btnAbort" title="中止当前运行">中止</button>
+    <textarea id="input" placeholder="输入指令…（Enter 发送，Shift+Enter 换行）"></textarea>
+    <div class="row">
+      <span id="cstate" class="state idle" title="agent 当前状态"><span class="dot"></span><span id="cstateText">空闲</span></span>
+      <span class="hint">Enter 发送 · Shift+Enter 换行 · Ctrl+Enter 发送 · 空输入按 ↑ 召回上一条 · 忙时发送自动排队，转向并入当前运行</span>
+      <span class="count" id="charCount"></span>
+      <button id="btnAbort" class="cbtn danger" title="中止当前运行（后台任务不受影响）">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2"/></svg><span class="lbl">中止</span>
+      </button>
+      <button id="btnSteer" class="cbtn secondary" title="插入当前工具轮之后，并入正在运行的工作">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 14 20 9 15 4"/><path d="M4 20v-7a4 4 0 0 1 4-4h12"/></svg><span class="lbl">转向</span>
+      </button>
+      <button id="btnSend" class="cbtn primary" title="发送（忙时自动排队为 follow-up）">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg><span class="lbl" id="btnSendLabel">发送</span>
+      </button>
+    </div>
   </div>
 </div>
 <div id="toast" class="toast"></div>
@@ -439,6 +484,12 @@ function render(view) {
   st.textContent = busy ? "运行中" : "空闲";
   st.className = "badge " + (busy ? "busy" : "idle");
   $("btnAbort").disabled = !busy;
+  // 同步输入区状态胶囊与发送按钮文案（忙时发送变为“排队”）
+  const cstate = $("cstate");
+  cstate.className = "state " + (busy ? "busy" : "idle");
+  $("cstateText").textContent = busy ? "运行中" : "空闲";
+  $("btnSendLabel").textContent = busy ? "排队" : "发送";
+  $("btnSend").title = busy ? "正在运行：发送将自动排队为 follow-up" : "发送（忙时自动排队为 follow-up）";
 
   const agent = view.docs?.["pi.agent"] ?? {};
   const modelSel = $("modelSel");
@@ -617,6 +668,7 @@ async function send(whenBusy) {
   try {
     await api("/api/ask", { method: "POST", body: JSON.stringify({ content, whenBusy }) });
     input.value = ""; input.style.height = "auto";
+    lastSent = content; localStorage.removeItem(DRAFT_KEY); updateCount();
     followBottom = true; // 自己发言后视图跳到最新
     $("transcript").scrollTo({ top: $("transcript").scrollHeight, behavior: "smooth" });
   } catch (err) { toast("提交失败：" + err.message); }
@@ -690,8 +742,22 @@ function maybeRefreshFiles() {
   lastFilesFetch = Date.now();
   void refreshFiles();
 }
-$("input").addEventListener("keydown", (ev) => { if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); send("followUp"); } });
-$("input").addEventListener("input", (ev) => { ev.target.style.height = "auto"; ev.target.style.height = Math.min(160, ev.target.scrollHeight) + "px"; });
+// ---------- 输入框增强：草稿持久化、字数统计、Ctrl+Enter 发送、↑ 召回上一条 ----------
+const DRAFT_KEY = "pi-durable-draft";
+const inputEl = $("input");
+let lastSent = "";
+function updateCount() { const n = inputEl.value.length; $("charCount").textContent = n ? n + " 字" : ""; }
+inputEl.value = localStorage.getItem(DRAFT_KEY) || "";
+inputEl.style.height = "auto"; inputEl.style.height = Math.min(160, inputEl.scrollHeight) + "px"; updateCount();
+inputEl.addEventListener("keydown", (ev) => {
+  if (ev.key === "Enter" && (!ev.shiftKey || ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); send("followUp"); }
+  else if (ev.key === "ArrowUp" && !inputEl.value && lastSent) { inputEl.value = lastSent; inputEl.dispatchEvent(new Event("input")); ev.preventDefault(); }
+});
+inputEl.addEventListener("input", (ev) => {
+  ev.target.style.height = "auto"; ev.target.style.height = Math.min(160, ev.target.scrollHeight) + "px";
+  localStorage.setItem(DRAFT_KEY, ev.target.value);
+  updateCount();
+});
 
 // ---------- 会话 / 模型 / 审批 / 备份 / 重启 ----------
 function renderSessions(payload) {
