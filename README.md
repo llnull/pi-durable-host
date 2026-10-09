@@ -21,7 +21,7 @@ clone 到任意目录即可使用；运行时数据都在 `data/`（已 gitignor
 | `lib/extensions.js` | 自建扩展：host-project-context / host-guard（拦截入待批清单）/ host-team（subagent） |
 | `lib/server.js` | 常驻 daemon：HTTP + SSE 实时视图 + REST API（含会话/审批/备份/热重启/工作区文件） |
 | `lib/ui.html` | Web UI（会话/模型切换、审批面板、实时视图、任务图、文件面板、专注模式） |
-| `lib/models.js` | 多主机模型层（pi 配置自适应 / Ark relay 回退） |
+| `lib/models.js` | 多主机模型层（完全复用 `~/.pi/agent` 的 models.json / auth.json / models-store.json / settings.json） |
 | `lib/sessions.js` | 命名会话 ↔ conversation 映射（`data/sessions.json`） |
 | `lib/approvals.js` | 批准清单 + 待批清单（guard / CLI / daemon / UI 共用） |
 | `lib/backup.js` | `VACUUM INTO` 一致性快照（daemon 内多连接安全，无需暂停 run） |
@@ -43,19 +43,38 @@ clone 到任意目录即可使用；运行时数据都在 `data/`（已 gitignor
 - 可选 `PI_DURABLE_HOST` —— serve 默认监听地址（默认 `127.0.0.1`）
 - 可选 `PI_DURABLE_DATA_DIR` —— 覆盖数据目录（默认 `<repo>/data`；测试/多实例用）
 
-## 模型后端（多主机兼容）
+## 模型后端（完全复用 pi 配置）
 
-`lib/models.js` 在每台主机上自动选择可用的后端，同一份代码无需修改：
+host 不维护自己的模型配置——直接复用 pi CLI 的 `~/.pi/agent/`，各机器自行配置，同一份代码无需修改：
 
-| 优先级 | 来源 | 说明 |
-|---|---|---|
-| 1 | `PI_DURABLE_PROVIDER=ark` 或 `=<pi provider id>` | 显式指定 |
-| 2 | 本机 pi 配置（自动，推荐） | `~/.pi/agent/auth.json` 里有 api-key provider 时启用：provider、key、模型目录与默认模型全部跟随 pi CLI 的 settings.json / models-store.json |
-| 3 | Ark relay（自动回退） | 具备 `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY`，且提供了 relay 地址（环境变量 `ARK_BASE_URL` 或机器本地 `data/ark.json`）时启用 |
+| 文件 | 作用 |
+|---|---|
+| `models.json` | 自定义 provider（中继/自建端点）：`baseUrl` + `api`（如 `anthropic-messages`）+ 模型目录；`apiKey` 支持 `$VAR`/`${VAR}` 环境变量引用（密钥不落盘） |
+| `auth.json` | pi `/login` 存储的 api-key 凭证 |
+| `models-store.json` | pi 维护的模型目录缓存（`pi update --models`） |
+| `settings.json` | `defaultProvider` / `defaultModel` |
 
-- `PI_DURABLE_MODEL` 覆盖默认模型（两条路径都适用）；`PI_DURABLE_PI_DIR` 覆盖 pi agent 目录（默认 `~/.pi/agent`）
-- 专用环境变量 `PI_DURABLE_KEY_<PROVIDER_ID>`（非字母数字转 `_`）优先于 pi 的 auth.json
-- Ark relay 地址属于机器本地配置：`data/ark.json`（`{"baseUrl": "..."}`，`data/` 已 gitignore）或环境变量 `ARK_BASE_URL`（优先）；仓库不含任何机器地址，两者皆无时 ark 路径自动关闭
+选型顺序：`PI_DURABLE_PROVIDER=<id>` 显式指定 → `settings.json` 的 `defaultProvider` → `models.json` 自定义 provider → `auth.json` 凭证 provider。
+`PI_DURABLE_MODEL` 覆盖默认模型；`PI_DURABLE_KEY_<PROVIDER_ID>` 覆盖凭证（优先于 auth.json）；`PI_DURABLE_PI_DIR` 覆盖 pi agent 目录（默认 `~/.pi/agent`）。
+
+自定义中继示例（`~/.pi/agent/models.json`）：
+
+```json
+{
+  "providers": {
+    "my-relay": {
+      "baseUrl": "http://your-relay-host:3000/api",
+      "apiKey": "$MY_RELAY_TOKEN",
+      "api": "anthropic-messages",
+      "models": [
+        { "id": "your-model", "name": "Your Model", "reasoning": true,
+          "input": ["text"], "contextWindow": 200000, "maxTokens": 65536 }
+      ]
+    }
+  }
+}
+```
+
 - host-guard 的磁盘类拦截同时覆盖 Linux（/dev/sd*、nvme、vd）与 macOS（/dev/disk*、/dev/rdisk*、diskutil 抹除/卸载/缩容）
 
 ## 单写者模型（重要）
