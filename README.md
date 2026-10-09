@@ -115,6 +115,9 @@ guard 拦截危险 bash 命令时，命令进入 `data/approvals-pending.json` �
   从工具里 nohup 出来的后台脚本会一起被杀（nohup 只免 SIGHUP，不换进程组；且 macOS 无 setsid）。
   需要跨 daemon 存活的工作必须独立会话（如 `node -e spawn(...,{detached:true})`），
   或干脆走 `/api/restart`（后继由 daemon 自身派生，天然不在工具进程树里）
+- 双保险（issue #25）：① 工具子进程携带 `PI_DURABLE_HOSTED_BY` 环境标记，CLI `restart` 检测到即拒绝
+  （工具调用被打断后会被 pi-durable 重放，重放的 restart 会再杀一次后继 daemon，形成循环）；
+  ② `/api/restart` 15s 防抖窗口（`data/restart.marker`，跨世代生效、过期自愈）
 - `node host.js timing [n]`：tool-timing.log 汇总（每工具 n / avg / p50 / p95 / max）+ 最近 n 条
 
 ## 用法

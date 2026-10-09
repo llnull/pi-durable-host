@@ -82,7 +82,17 @@ async function openHarness({ takeover = false } = {}) {
 		{
 			models: MODEL_LAYER.models,
 			registry: buildRegistry(),
-			env: (target) => new NodeExecutionEnv({ cwd: target.cwd ?? WORKSPACE }),
+			env: (target) =>
+				new NodeExecutionEnv({
+					cwd: target.cwd ?? WORKSPACE,
+					// Tool children carry the host's identity: `restart` refuses to run
+				// inside the daemon it would kill (interrupted calls get replayed,
+				// and a replayed restart re-kills the successor — issue #25).
+					shellEnv: {
+						PI_DURABLE_HOSTED_BY: String(process.pid),
+						PI_DURABLE_DATA_DIR: DATA_DIR,
+					},
+				}),
 			settings: {
 				stream: { timeoutMs: 120_000 },
 				retry: { maxRetries: 3 },
@@ -555,6 +565,19 @@ async function cmdTiming(limit = 10) {
 }
 
 async function cmdRestart() {
+	// Refuse inside the daemon's own tool environment: killing the daemon
+	// interrupts this call, pi-durable replays it at the next boundary, and the
+	// replayed restart kills the successor too (a restart loop — issue #25).
+	const hostedBy = process.env.PI_DURABLE_HOSTED_BY;
+	if (hostedBy) {
+		console.error(
+			`[restart] 拒绝：本命令正运行在 daemon（pid ${hostedBy}）的工具环境内。` +
+				`工具调用被打断后会被 pi-durable 重放，重放的 restart 会再次杀死 daemon，形成重启循环。` +
+				`请改用 Web UI 的「重启」按钮，或在 daemon 之外的终端运行：node host.js restart`,
+		);
+		process.exitCode = 1;
+		return;
+	}
 	const daemon = requireDaemonOrThrow("restart");
 	if (!daemon) {
 		console.error("restart 需要 daemon 正在运行（node host.js serve）");
