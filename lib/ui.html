@@ -43,7 +43,7 @@
 
   .toolbar {
     display: flex; flex-wrap: wrap; gap: 8px; align-items: center; flex: none;
-    width: 100%; max-width: 1200px; margin: 0 auto; padding: 12px 14px 8px;
+    width: 100%; max-width: var(--shell-max); margin: 0 auto; padding: 12px 14px 8px;
     background: var(--bg);
   }
   .toolbar input[type=search] {
@@ -57,12 +57,20 @@
   .toolbar .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
   .toolbar .mini { border: 1px solid var(--line); background: var(--paper); color: var(--soft); border-radius: 9px; padding: 5px 10px; font-size: 12.5px; cursor: pointer; }
 
+  /* --shell-max：内容壳宽度档位（宽屏逐级放宽）；专注模式（body.layout-focus）收起侧栏并收窄为阅读列宽 */
+  :root { --shell-max: 1200px; --focus-max: 1000px; }
+  @media (min-width: 1440px) { :root { --shell-max: 1440px; } }
+  @media (min-width: 1920px) { :root { --shell-max: 1600px; } }
   /* minmax(0,1fr)：断开 min-content 向轨道上传，防止长代码行/表格把整页撑宽；flex:1 占满剩余高度 */
-  .layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 300px); gap: 14px; width: 100%; max-width: 1200px; margin: 6px auto 0; padding: 0 14px 14px; flex: 1; min-height: 0; }
+  .layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 300px); gap: 14px; width: 100%; max-width: var(--shell-max); margin: 6px auto 0; padding: 0 14px 14px; flex: 1; min-height: 0; }
   @media (max-width: 900px) { .layout { display: flex; flex-direction: column; } #transcript { flex: 1; min-height: 0; } .side { flex: none; max-height: 38%; } }
   @media (max-width: 560px) { .layout { padding: 0 10px 10px; } .run-stats { display: none; } .msg .bubble { max-width: 94%; } }
+  /* 专注模式：侧栏收起，主列收窄为阅读列宽并居中 */
+  body.layout-focus .layout { grid-template-columns: minmax(0, 1fr); max-width: var(--focus-max); }
+  body.layout-focus .side { display: none; }
+  body.layout-focus #transcript .run, body.layout-focus #transcript .epoch { max-width: 920px; margin-left: auto; margin-right: auto; }
   .panel { background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; min-width: 0; max-width: 100%; }
-  #transcript { overflow-y: auto; min-height: 0; padding-bottom: 18px; }
+  #transcript { overflow-y: auto; scrollbar-gutter: stable; min-height: 0; padding-bottom: 18px; }
   .side { display: flex; flex-direction: column; gap: 14px; min-width: 0; min-height: 0; overflow-y: auto; }
   .side .panel { overflow: hidden; }
   .panel h3 { margin: 0 0 8px; font-size: 13px; color: var(--faint); font-weight: 600; letter-spacing: .06em; }
@@ -91,6 +99,9 @@
   .msg { display: flex; margin: 8px 0; }
   .msg.user { justify-content: flex-end; }
   .bubble { max-width: 86%; border-radius: 12px; padding: 8px 13px; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; }
+  .msg.agent .bubble { max-width: 100%; }
+  /* 超宽下散文限宽保可读性；表格/代码块仍用满气泡宽度 */
+  .bubble .md p { max-width: 88ch; }
   .msg.user .bubble { background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
   .msg.agent .bubble { background: #f4f5fa; border: 1px solid var(--line); border-bottom-left-radius: 4px; }
   .msg.stream .bubble { border-style: dashed; }
@@ -214,6 +225,7 @@
   <button class="mini" id="btnExpand">全部展开</button>
   <button class="mini" id="btnCollapse">全部收起</button>
   <button class="mini" id="btnBottom">跳到最新 ↓</button>
+  <button class="chip" id="chipFocus" title="专注模式：收起侧栏，收窄为阅读列宽（再次点击恢复）">专注</button>
 </div>
 
 <div class="layout">
@@ -652,6 +664,21 @@ $("search").addEventListener("input", rerender);
 $("btnExpand").onclick = () => { if (lastView) for (const g of groupRuns((lastView.entries ?? []).filter((e) => e.kind !== "head"))) if (g.type === "run") expanded.add(String(g.firstId)); rerender(); };
 $("btnCollapse").onclick = () => { expanded.clear(); rerender(); };
 $("btnBottom").onclick = () => { followBottom = true; $("transcript").scrollTo({ top: $("transcript").scrollHeight, behavior: "smooth" }); };
+// ---------- 专注模式：收起侧栏 + 阅读列宽（localStorage 记忆；未设置时窄屏默认开启） ----------
+const FOCUS_KEY = "pi-durable-focus";
+function applyFocus(on) {
+  document.body.classList.toggle("layout-focus", on);
+  $("chipFocus").classList.toggle("on", on);
+}
+(function initFocus() {
+  // 默认关闭：侧栏含审批面板，默认隐藏会让用户看不到待批准的危险命令；只尊重显式选择
+  applyFocus(localStorage.getItem(FOCUS_KEY) === "on");
+})();
+$("chipFocus").onclick = () => {
+  const on = !document.body.classList.contains("layout-focus");
+  localStorage.setItem(FOCUS_KEY, on ? "on" : "off");
+  applyFocus(on);
+};
 // 用户手动滚动时更新跟随意图：贴近底部视为想要跟随
 $("transcript").addEventListener("scroll", () => {
   const t = $("transcript");
