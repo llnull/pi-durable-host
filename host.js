@@ -86,10 +86,12 @@ async function openHarness({ takeover = false } = {}) {
 				new NodeExecutionEnv({
 					cwd: target.cwd ?? WORKSPACE,
 					// Tool children carry the host's identity: `restart` refuses to run
-				// inside the daemon it would kill (interrupted calls get replayed,
-				// and a replayed restart re-kills the successor — issue #25).
+					// inside the daemon it would kill (interrupted calls get replayed,
+					// and a replayed restart re-kills the successor — issue #25), and
+					// `ask` refuses to wait on the conversation it is blocking (#28).
 					shellEnv: {
 						PI_DURABLE_HOSTED_BY: String(process.pid),
+						PI_DURABLE_CONV: String(target.conversationId),
 						PI_DURABLE_DATA_DIR: DATA_DIR,
 					},
 				}),
@@ -172,11 +174,43 @@ function requireDaemonOrThrow(command) {
 	return daemon;
 }
 
+/**
+ * Refuse `ask` from inside the daemon's tool environment when its target could
+ * never settle: a followUp queues and waits for the conversation to settle, but
+ * that conversation is blocked on this very tool call — a circular wait (#28).
+ * Allowed: an explicit --session whose conversation is neither this tool's own
+ * nor the daemon's current session (a true bystander).
+ */
+function hostedAskGuard(session) {
+	const hostedBy = process.env.PI_DURABLE_HOSTED_BY;
+	if (!hostedBy) return undefined;
+	const refusal = (name, why) =>
+		`[ask] 拒绝：本命令正运行在 daemon（pid ${hostedBy}）的工具环境内，目标会话 ${name} ${why}。` +
+		`ask 会作为 followUp 排队并等待该会话 settle，而该会话正被本工具调用占用 → 环等死锁（issue #28）。` +
+		`请改用 --session <其它会话>，或由人通过 Web UI / 外部终端提交。`;
+	const myConv = process.env.PI_DURABLE_CONV;
+	if (!myConv) return refusal("（未知）", "无法判定（旧版 daemon 未注入会话标记，保守拒绝）");
+	const store = readSessions(sessionsFile(DATA_DIR));
+	const currentConv = String(store.sessions[store.current]?.conversationId ?? "");
+	const targetName = session ?? store.current;
+	const targetConv = String(store.sessions[targetName]?.conversationId ?? "");
+	if (!session) return refusal(targetName, "是隐式目标（当前会话）");
+	if (targetConv === myConv) return refusal(targetName, "就是本工具调用所在的会话");
+	if (targetConv === currentConv) return refusal(targetName, "是 daemon 当前会话（可能是本任务的祖先）");
+	return undefined;
+}
+
 async function forwardAsk(args) {
 	const { session, fresh, prompt } = askArgs(args);
 	if (!prompt) {
 		console.error("usage: node host.js ask <prompt> [--fresh] [--session s]");
 		process.exitCode = 2;
+		return;
+	}
+	const guard = hostedAskGuard(session);
+	if (guard) {
+		console.error(guard);
+		process.exitCode = 1;
 		return;
 	}
 	const daemon = requireDaemonOrThrow("ask");
@@ -209,6 +243,12 @@ async function cmdAsk(args) {
 	if (!prompt) {
 		console.error("usage: node host.js ask <prompt> [--fresh] [--session s]");
 		process.exitCode = 2;
+		return;
+	}
+	const guard = hostedAskGuard(session);
+	if (guard) {
+		console.error(guard);
+		process.exitCode = 1;
 		return;
 	}
 	const requestId = fresh ? undefined : `ask:${createHash("sha256").update(prompt).digest("hex").slice(0, 24)}`;
