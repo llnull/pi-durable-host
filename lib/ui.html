@@ -501,6 +501,77 @@ function entryHtml(e, resultIndex, liveToolByCall) {
 }
 
 // ---------- 主渲染 ----------
+// ---------- 增量渲染（#27 P1）：entry HTML 缓存 + run 级 DOM 复用 ----------
+// committed entry 不可变：无未配对 toolCall 的条目渲染一次后缓存；
+// 流式期间只重建末 run 的 body 与侧栏，历史 run 的 DOM 稳定不动。
+const runEls = new Map();   // key → { el, sig, open, hay, runNo }
+const entryCache = new Map(); // entryId → html（缓存上限保护，结构性重置时消亡）
+
+function allCallsResolved(entry, resultIndex) {
+  for (const m of entry.model ?? []) {
+    for (const b of asBlocks(m.content)) {
+      if (b.type === "toolCall" && !resultIndex.has(b.id)) return false;
+    }
+  }
+  return true;
+}
+
+function liveTailHtml(ctx) {
+  let body = "";
+  const gen = ctx.live.generation;
+  if (gen?.message?.content) {
+    const parts = [];
+    for (const b of asBlocks(gen.message.content)) {
+      if (b.type === "text" && b.text) parts.push(`<div class="e-body md">${mdToHtml(b.text)}</div>`);
+      else if (b.type === "thinking" && b.thinking) parts.push(`<div class="e-body thinking quoted">${esc(b.thinking)}</div>`);
+    }
+    if (parts.length) body += `<div class="msg agent stream"><div class="bubble">${parts.join("")}<div class="muted">✍ 生成中（第 ${gen.attempt + 1} 次）${gen.retry ? ` · 重试: ${esc(gen.retry.error)}` : ""}</div></div></div>`;
+  }
+  for (const t of ctx.live.tools ?? []) {
+    if (ctx.resultIndex.has(t.callId)) continue;
+    body += toolCardHtml({ name: t.name, id: t.callId, arguments: t.details?.arguments ?? {} }, null, t);
+  }
+  return body;
+}
+
+function entryHtmlCached(e, ctx) {
+  const id = String(e.id);
+  const cacheable = e.kind !== "pi.assistant" || allCallsResolved(e, ctx.resultIndex);
+  if (cacheable) {
+    const hit = entryCache.get(id);
+    if (hit !== undefined) return hit;
+  }
+  const html = entryHtml(e, ctx.resultIndex, ctx.liveToolByCall);
+  if (cacheable) {
+    if (entryCache.size > 4000) entryCache.clear(); // 结构重置后的冷缓存兑底
+    entryCache.set(id, html);
+  }
+  return html;
+}
+
+function runBodyHtml(g, ctx, isLastRun) {
+  let html = "";
+  for (const e of g.entries) html += entryHtmlCached(e, ctx);
+  if (isLastRun && ctx.busy) html += liveTailHtml(ctx);
+  return html;
+}
+
+function runHeadHtml(g, runNo, isOpen, busy) {
+  const promptText = stripMd(g.prompt);
+  const answerText = stripMd(g.answer);
+  const preview = g.answer
+    ? `<b>${esc(promptText)}</b> → ${esc(answerText.length > 70 ? answerText.slice(0, 70) + "…" : answerText)}`
+    : `<b>${esc(promptText)}</b>${busy ? " <span class='muted'>（进行中…）</span>" : ""}`;
+  const stats = [`${g.turns} 轮响应`, g.tools ? `${g.tools} 次工具` : null, g.time].filter(Boolean).join(" · ");
+  return `<div class="run-head" data-first="${String(g.firstId)}">
+      <span class="run-no">#${runNo}</span>
+      <span class="run-tag ${g.steer ? "steer" : "new"}">${g.steer ? "转向" : "新输入"}</span>
+      <span class="run-preview">${preview}</span>
+      <span class="run-stats">${stats}</span>
+      <span class="run-caret">${isOpen ? "▾" : "▸"}</span>
+    </div>`;
+}
+
 function render(view) {
   const live = view.docs?.["pi.live"] ?? {};
   const busy = Boolean(live.run);
@@ -535,13 +606,11 @@ function render(view) {
     }
   }
   const liveToolByCall = new Map((live.tools ?? []).map((t) => [t.callId, t]));
+  const ctx = { live, busy, resultIndex, liveToolByCall };
 
   const groups = groupRuns(entries);
   const q = $("search").value.trim().toLowerCase();
-  let runNo = 0;
-  const sections = [];
 
-  // 默认只展开最后一轮；搜索时展开所有命中轮
   // 最后一轮（或新出现的轮次）自动展开
   if (groups.length) {
     const lastRun = [...groups].reverse().find((g) => g.type === "run");
@@ -552,63 +621,78 @@ function render(view) {
     }
   }
 
-  for (const g of groups) {
-    if (g.type === "epoch") {
-      const label = g.entry.kind === "pi.reset" ? "上下文重置" : "上下文压缩";
-      const summary = textBlocks(g.entry.model?.[0]?.content);
-      sections.push(`<div class="epoch">── ${label} ──</div>` + (summary ? `<div class="quoted muted md">${mdToHtml(summary)}</div>` : ""));
-      continue;
-    }
-    runNo++;
-    const firstId = String(g.firstId); // 展开状态统一用字符串（dataset 与 Set 的一致性）
-    const hay = (g.prompt + " " + g.entries.map(flatText).join(" ")).toLowerCase();
-    if (q && !hay.includes(q)) continue;
-    if (filterMode === "tools" && g.tools === 0) continue;
-    if (filterMode === "steer" && !g.steer) continue;
-
-    const isOpen = q ? true : expanded.has(firstId);
-    const promptText = stripMd(g.prompt);
-    const answerText = stripMd(g.answer);
-    const preview = g.answer
-      ? `<b>${esc(promptText)}</b> → ${esc(answerText.length > 70 ? answerText.slice(0, 70) + "…" : answerText)}`
-      : `<b>${esc(promptText)}</b>${busy ? " <span class='muted'>（进行中…）</span>" : ""}`;
-    const stats = [`${g.turns} 轮响应`, g.tools ? `${g.tools} 次工具` : null, g.time].filter(Boolean).join(" · ");
-    let body = "";
-    if (isOpen) {
-      body = g.entries.map((e) => entryHtml(e, resultIndex, liveToolByCall)).join("");
-      if (busy && g === [...groups].reverse().find((x) => x.type === "run")) {
-        // 流式生成中的部分回答
-        const gen = live.generation;
-        if (gen?.message?.content) {
-          const parts = [];
-          for (const b of asBlocks(gen.message.content)) {
-            if (b.type === "text" && b.text) parts.push(`<div class="e-body md">${mdToHtml(b.text)}</div>`);
-            else if (b.type === "thinking" && b.thinking) parts.push(`<div class="e-body thinking quoted">${esc(b.thinking)}</div>`);
-          }
-          if (parts.length) body += `<div class="msg agent stream"><div class="bubble">${parts.join("")}<div class="muted">✍ 生成中（第 ${gen.attempt + 1} 次）${gen.retry ? ` · 重试: ${esc(gen.retry.error)}` : ""}</div></div></div>`;
-        }
-        // 尚未拿到结果的运行中工具
-        for (const t of live.tools ?? []) {
-          if (resultIndex.has(t.callId)) continue;
-          body += toolCardHtml({ name: t.name, id: t.callId, arguments: t.details?.arguments ?? {} }, null, t);
-        }
-      }
-    }
-    sections.push(`<div class="run ${isOpen ? "open" : ""}" data-first="${firstId}">
-      <div class="run-head" data-first="${firstId}">
-        <span class="run-no">#${runNo}</span>
-        <span class="run-tag ${g.steer ? "steer" : "new"}">${g.steer ? "转向" : "新输入"}</span>
-        <span class="run-preview">${preview}</span>
-        <span class="run-stats">${stats}</span>
-        <span class="run-caret">${isOpen ? "▾" : "▸"}</span>
-      </div>
-      ${isOpen ? `<div class="run-body">${body}</div>` : ""}
-    </div>`);
-  }
-
   const t = $("transcript");
   const nearBottom = t.scrollHeight - t.scrollTop - t.clientHeight < 160;
-  t.innerHTML = sections.join("") || `<div class="muted">（无匹配内容）</div>`;
+
+  if (!groups.length) {
+    runEls.clear();
+    t.innerHTML = `<div class="muted">（无匹配内容）</div>`;
+  } else {
+    let runNo = 0;
+    const desiredOrder = [];
+    let anyVisible = false;
+    for (const g of groups) {
+      const isLast = g === groups[groups.length - 1];
+      if (g.type === "epoch") {
+        const key = `epoch:${g.entry.id}`;
+        desiredOrder.push(key);
+        anyVisible = true; // epoch 恒可见，不应触发"无匹配"占位
+        if (!runEls.has(key)) {
+          const label = g.entry.kind === "pi.reset" ? "上下文重置" : "上下文压缩";
+          const summary = textBlocks(g.entry.model?.[0]?.content);
+          const el = document.createElement("div");
+          el.dataset.key = key;
+          el.innerHTML = `<div class="epoch">── ${label} ──</div>` + (summary ? `<div class="quoted muted md">${mdToHtml(summary)}</div>` : "");
+          runEls.set(key, { el, sig: "epoch" });
+        }
+        continue;
+      }
+      runNo++;
+      const key = String(g.firstId);
+      desiredOrder.push(key);
+      const isOpen = q ? true : expanded.has(key);
+      const sig = [runNo, g.entries.length, g.turns, g.tools, g.answer ? 1 : 0, isOpen ? 1 : 0, isLast && busy ? 1 : 0].join(":");
+      let rec = runEls.get(key);
+      if (!rec) {
+        const el = document.createElement("div");
+        el.className = "run";
+        el.dataset.key = key;
+        rec = { el, sig: "" };
+        runEls.set(key, rec);
+      }
+      if (rec.sig !== sig) {
+        const isLastRun = g === [...groups].reverse().find((x) => x.type === "run");
+        rec.el.className = `run ${isOpen ? "open" : ""}`;
+        rec.el.innerHTML = runHeadHtml(g, runNo, isOpen, busy) + (isOpen ? `<div class="run-body">${runBodyHtml(g, ctx, isLastRun)}</div>` : "");
+        rec.sig = sig;
+        rec.hay = (g.prompt + " " + g.entries.map(flatText).join(" ")).toLowerCase();
+      }
+      // 搜索/过滤：只切 display，不重建
+      const visible = (!q || (rec.hay ?? "").includes(q)) && !((filterMode === "tools" && g.tools === 0) || (filterMode === "steer" && !g.steer));
+      rec.el.style.display = visible ? "" : "none";
+      if (visible) anyVisible = true;
+    }
+    // 结构对账：删失效 + 校准顺序（仅结构变化时发生 DOM 移动）
+    const wanted = new Set(desiredOrder);
+    for (const [key, rec] of [...runEls]) {
+      if (!wanted.has(key)) { rec.el.remove(); runEls.delete(key); }
+    }
+    const domKeys = Array.from(t.children).map((el) => el.dataset.key).filter(Boolean);
+    if (domKeys.join("\u0001") !== desiredOrder.join("\u0001")) {
+      for (const key of desiredOrder) t.appendChild(runEls.get(key).el);
+    }
+    const noMatch = t.querySelector("[data-nomatch]");
+    if (!anyVisible && groups.length > 0) {
+      if (!noMatch) {
+        const d = document.createElement("div");
+        d.className = "muted";
+        d.dataset.nomatch = "1";
+        d.textContent = "（无匹配内容）";
+        t.appendChild(d);
+      }
+    } else noMatch?.remove();
+  }
+
   if (nearBottom || followBottom) t.scrollTop = t.scrollHeight; // 内容更新时视图跟随（用户上翻阅读时不拉拽）
   maybeRefreshTasks(); // 任务图面板打开时随渲染节流刷新（内部再限 3s）
   maybeRefreshFiles();
@@ -657,11 +741,7 @@ $("transcript").addEventListener("click", (ev) => {
   if (!head) return;
   const first = head.dataset.first;
   expanded.has(first) ? expanded.delete(first) : expanded.add(first);
-  const run = head.closest(".run");
-  run.classList.toggle("open");
-  const body = run.querySelector(".run-body");
-  if (body) { body.remove(); run.querySelector(".run-caret").textContent = "▸"; }
-  else { run.querySelector(".run-caret").textContent = "▾"; rerender(); }
+  rerender(); // 增量渲染：只重建该 run，历史 run 稳定不动
 });
 function rerender() { if (lastView) render(lastView); }
 let lastView = null;
@@ -674,7 +754,8 @@ document.querySelectorAll(".chip").forEach((chip) => {
     rerender();
   };
 });
-$("search").addEventListener("input", rerender);
+let searchTimer = null; // 搜索防抖（#27 P1）：高频键入时避免全量重算 hay 匹配
+$("search").addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(rerender, 200); });
 $("btnExpand").onclick = () => { if (lastView) for (const g of groupRuns((lastView.entries ?? []).filter((e) => e.kind !== "head"))) if (g.type === "run") expanded.add(String(g.firstId)); rerender(); };
 $("btnCollapse").onclick = () => { expanded.clear(); rerender(); };
 $("btnBottom").onclick = () => { followBottom = true; $("transcript").scrollTo({ top: $("transcript").scrollHeight, behavior: "smooth" }); };
@@ -902,15 +983,26 @@ $("btnRestart").onclick = async () => {
 
 // ---------- 连接 ----------
 let renderTimer = null;
+let renderPendingOnVisible = false;
 function scheduleRender(view) {
   lastView = view;
-  if (renderTimer) return; // 合并流式期间的高频 commit（~100ms/次），120ms 节流重绘
-  renderTimer = setTimeout(() => { renderTimer = null; render(lastView); }, 120);
+  if (renderTimer) return; // rAF 对齐帧率；后台标签页跳帧，回前台补一次
+  renderTimer = requestAnimationFrame(() => {
+    renderTimer = null;
+    if (document.hidden) { renderPendingOnVisible = true; return; }
+    render(lastView);
+  });
 }
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && renderPendingOnVisible) { renderPendingOnVisible = false; if (lastView) render(lastView); }
+});
 // ---------- 连接（SSE v2：view 快照 + entries/live/docs 增量帧，见 issue #27） ----------
 let uiView = null;
 function applyEvent(name, data) {
-  if (name === "view") uiView = data;
+  if (name === "view") {
+    uiView = data;
+    entryCache.clear(); // 结构性重置：旧缓存可能携带过时的 call/result 配对
+  }
   else if (!uiView) return;
   else if (name === "entries") {
     const list = uiView.entries ?? (uiView.entries = []);
