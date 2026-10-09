@@ -907,10 +907,26 @@ function scheduleRender(view) {
   if (renderTimer) return; // 合并流式期间的高频 commit（~100ms/次），120ms 节流重绘
   renderTimer = setTimeout(() => { renderTimer = null; render(lastView); }, 120);
 }
+// ---------- 连接（SSE v2：view 快照 + entries/live/docs 增量帧，见 issue #27） ----------
+let uiView = null;
+function applyEvent(name, data) {
+  if (name === "view") uiView = data;
+  else if (!uiView) return;
+  else if (name === "entries") {
+    const list = uiView.entries ?? (uiView.entries = []);
+    for (const e of data.entries ?? []) if (!list.length || list[list.length - 1].id !== e.id) list.push(e);
+  } else if (name === "live") {
+    uiView.docs = { ...(uiView.docs ?? {}), "pi.live": data.live };
+  } else if (name === "docs") {
+    uiView.docs = { ...(uiView.docs ?? {}), ...data.docs };
+  }
+  $("conn").textContent = "已连接";
+  scheduleRender(uiView);
+}
 function connect() {
   const es = new EventSource("/api/events");
   es.addEventListener("session", (ev) => { renderSessions(JSON.parse(ev.data)); });
-  es.addEventListener("view", (ev) => { $("conn").textContent = "已连接"; scheduleRender(JSON.parse(ev.data)); });
+  for (const name of ["view", "entries", "live", "docs"]) es.addEventListener(name, (ev) => applyEvent(name, JSON.parse(ev.data)));
   es.onerror = () => { $("conn").textContent = "重连中…"; };
 }
 connect();
