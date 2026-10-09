@@ -1,15 +1,16 @@
-# Pi Durable 本机部署
+# Pi Durable Host
 
-`@earendil-works/pi-durable`（实验性，API 随版本变动）的本地 host：持久化会话跑在 SQLite 上，
-模型后端多主机自适应（本机 pi 配置 → zai GLM 直连，openai-completions；或 Ark relay，anthropic-messages），
-工具为 CodingTools（read / write / edit / bash），
-外加 host 自建扩展（项目上下文 / 危险命令守卫 / 子代理）。
+`@earendil-works/pi-durable`（实验性，API 随版本变动）的本地 host：
 
-位置：macOS `/Users/llnull/Workspace/vibe-ws/pi-durable-host`、
-WSL `/mnt/d/ws/project/wsl-ws/ai/vibe-ws/pi-durable/`（同一仓库多机 clone；WSL 侧为 Windows 盘 drvfs，
-SQLite WAL 已实测可用，性能比 ext4 慢，重负载可考虑把 `data/` 挪回 ext4）
+- 持久化会话跑在 SQLite（WAL）上，进程崩溃可恢复
+- 模型后端多主机自适应：本机 pi 配置（openai-completions）或 Ark relay（anthropic-messages），同一份代码无需修改
+- 工具为 CodingTools（read / write / edit / bash），外加 host 自建扩展：项目上下文 / 危险命令守卫（审批流）/ 子代理
+- 常驻 daemon：Web UI（会话/模型切换、实时视图、审批、任务图、文件浏览）+ REST API + 热重启
 
-分析报告见 `pi-durable-report.html`（能力、目的与本地实现的完整分析）。
+clone 到任意目录即可使用；运行时数据都在 `data/`（已 gitignore，不入库）。
+
+> 提示：仓库放在 Windows 盘再挂进 WSL（drvfs）时，SQLite WAL 可用但性能低于 ext4；
+> 重负载场景建议用 `PI_DURABLE_DATA_DIR` 把数据目录指到 ext4 文件系统。
 
 ## 目录结构
 
@@ -18,26 +19,27 @@ SQLite WAL 已实测可用，性能比 ext4 慢，重负载可考虑把 `data/` 
 | `host.js` | host CLI（ask / history / wait / status / tasks / sessions / approve / backup / timing / restart / serve / config） |
 | `lib/lock.js` | 单写者锁（PID 存活检查，崩溃遗留的锁自动接管；`--takeover` 可等待前任退出） |
 | `lib/extensions.js` | 自建扩展：host-project-context / host-guard（拦截入待批清单）/ host-team（subagent） |
-| `lib/server.js` | 常驻 daemon：HTTP + SSE 实时视图 + REST API（含会话/审批/备份/热重启） |
-| `lib/ui.html` | Web UI（会话切换、模型切换、审批面板、实时视图、任务图） |
+| `lib/server.js` | 常驻 daemon：HTTP + SSE 实时视图 + REST API（含会话/审批/备份/热重启/工作区文件） |
+| `lib/ui.html` | Web UI（会话/模型切换、审批面板、实时视图、任务图、文件面板、专注模式） |
 | `lib/models.js` | 多主机模型层（pi 配置自适应 / Ark relay 回退） |
 | `lib/sessions.js` | 命名会话 ↔ conversation 映射（`data/sessions.json`） |
 | `lib/approvals.js` | 批准清单 + 待批清单（guard / CLI / daemon / UI 共用） |
 | `lib/backup.js` | `VACUUM INTO` 一致性快照（daemon 内多连接安全，无需暂停 run） |
 | `lib/daemon.js` | serve.json 发现 + CLI→daemon HTTP 转发 |
-| `data/session.sqlite` | 持久化存储（WAL，进程崩溃可恢复） |
+| `lib/format.js` | CLI 输出格式化（本地直连与 daemon 转发共用，两种路径输出一致） |
+| `data/session.sqlite` | 持久化存储（WAL，进程崩溃可恢复；运行时生成） |
 | `data/host.lock` | 单写者锁文件（存活期间持有，退出自动释放） |
 | `data/serve.json` | daemon 运行信息（pid/port/host；CLI 据此转发） |
 | `data/approvals*.json` | 批准清单 / 待批清单（`approve` 命令或 UI 维护，guard 每次调用实时读取） |
 | `data/tool-timing.log` | 工具调用耗时日志（host-guard 的计时 wrap 追加；`timing` 命令汇总） |
 | `data/backups/` | `backup` 快照（默认保留最新 20 份） |
-| `workspace/` | agent 工具的默认 cwd（bash/write/edit 在此工作） |
+| `workspace/` | agent 工具的默认 cwd（bash/write/edit 在此工作；不入库） |
 
 ## 依赖
 
 - Node >= 22.19（node:sqlite 有 ExperimentalWarning，可忽略）
-- `@earendil-works/pi-durable` + `@earendil-works/pi-ai` + `@earendil-works/chord`（npm 已装，均 1.1.0，与 pi CLI v1.1.0 同代）
-- 可选 `PI_DURABLE_TOKEN` —— daemon API 鉴权令牌（绑定非回环地址时强烈建议设置）
+- `npm install` 安装 `@earendil-works/pi-durable` + `@earendil-works/pi-ai` + `@earendil-works/chord`
+- 可选 `PI_DURABLE_TOKEN` —— daemon API 鉴权令牌（绑定非回环地址时强烈建议设置；Web UI / `/api/*` / `/files/*` 全部受保护）
 - 可选 `PI_DURABLE_HOST` —— serve 默认监听地址（默认 `127.0.0.1`）
 - 可选 `PI_DURABLE_DATA_DIR` —— 覆盖数据目录（默认 `<repo>/data`；测试/多实例用）
 
@@ -48,11 +50,12 @@ SQLite WAL 已实测可用，性能比 ext4 慢，重负载可考虑把 `data/` 
 | 优先级 | 来源 | 说明 |
 |---|---|---|
 | 1 | `PI_DURABLE_PROVIDER=ark` 或 `=<pi provider id>` | 显式指定 |
-| 2 | 本机 pi 配置（自动，macOS 默认） | `~/.pi/agent/auth.json` 有 api-key provider 时启用：provider、key、模型目录（如 zai 的 glm-5.3 / glm-4.6v / glm-5.3-flash / glm-5.3-highspeed）与默认模型全部跟随 pi CLI 的 settings.json / models-store.json |
-| 3 | Ark relay（自动回退，WSL 默认） | 检测到 `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY` 时启用；`ARK_BASE_URL` 可覆盖 relay 地址（默认 `http://192.168.210.107:3000/api`） |
+| 2 | 本机 pi 配置（自动，推荐） | `~/.pi/agent/auth.json` 里有 api-key provider 时启用：provider、key、模型目录与默认模型全部跟随 pi CLI 的 settings.json / models-store.json |
+| 3 | Ark relay（自动回退） | 同时具备 `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` **和** `ARK_BASE_URL` 时启用 |
 
 - `PI_DURABLE_MODEL` 覆盖默认模型（两条路径都适用）；`PI_DURABLE_PI_DIR` 覆盖 pi agent 目录（默认 `~/.pi/agent`）
 - 专用环境变量 `PI_DURABLE_KEY_<PROVIDER_ID>`（非字母数字转 `_`）优先于 pi 的 auth.json
+- Ark relay 地址通过 `ARK_BASE_URL` 显式提供，无内置默认值（`PI_DURABLE_PROVIDER=ark` 而未设置时直接报错提示）
 - host-guard 的磁盘类拦截同时覆盖 Linux（/dev/sd*、nvme、vd）与 macOS（/dev/disk*、/dev/rdisk*、diskutil 抹除/卸载/缩容）
 
 ## 单写者模型（重要）
@@ -100,7 +103,7 @@ guard 拦截危险 bash 命令时，命令进入 `data/approvals-pending.json` �
 node host.js serve [端口=7600] [--host 127.0.0.1] [--takeover]
 #   UI:        http://localhost:7600/
 #   POST /api/ask      { content, whenBusy?: "followUp"|"steer"|"reject", wait?: bool, requestId?, session? }
-#   POST /api/steer → 用 /api/ask 的 whenBusy:"steer"
+#                      （忙时排队/转向都走 ask 的 whenBusy，无独立 /api/steer）
 #   POST /api/abort    中止当前运行（后台任务不受影响）
 #   POST /api/compact  { instructions? }
 #   POST /api/reset    { note? }
@@ -110,7 +113,8 @@ node host.js serve [端口=7600] [--host 127.0.0.1] [--takeover]
 #   POST /api/backup   { file? }
 #   POST /api/restart  热重启（见上）
 #   GET  /api/state | /api/events(SSE) | /api/history | /api/status | /api/tasks | /api/usage
-#   GET  /api/models | /api/sessions | /api/approvals | /api/submission?id= | /api/entry?id=
+#   GET  /api/models | /api/sessions | /api/approvals | /api/files | /api/submission?id= | /api/entry?id=
+#   GET  /files/<path>  工作区静态文件（MIME 自适应、路径穿越防护；设置 PI_DURABLE_TOKEN 时同样受鉴权保护）
 
 # CLI（daemon 运行时自动转发到 daemon；未运行时本地直连存储）
 node host.js ask "..." [--fresh] [--session s]  # 提交 prompt，等 run 结束，打印回答
@@ -130,8 +134,11 @@ node host.js config               # 把存储的 agent cwd/model 重置为本目
 ## Web UI（http://localhost:7600/）
 
 - 顶栏：会话下拉（切换/新建/删除）、模型下拉（即改即生效，来自本机模型目录）、备份、热重启
-- 主区：按 run 分组的对话流（搜索/过滤/展开），工具调用卡片配对渲染，流式生成实时显示
-- 侧栏：实时运行、排队 inbox、**审批面板（待批一键批准）**、用量、任务图
+- 工具栏：对话搜索/过滤（全部 / 含工具调用 / 转向）、全部展开/收起、跳到最新、**专注模式**（收起侧栏、收窄为阅读列宽）
+- 主区：按 run 分组的对话流（内容壳宽屏分档自适应 1200/1440/1600），工具调用卡片配对渲染，markdown/表格/代码块渲染，流式生成实时显示
+- 输入区：卡片式 composer（聚焦高亮、运行状态胶囊、字数统计、草稿自动保存、Ctrl/⌘+Enter 发送、↑ 召回上一条、忙时「排队/转向」）
+- 侧栏：实时运行、排队 inbox、**审批面板（待批一键批准/撤销）**、用量、任务图、文件面板
+- 文件：回答中的工作区文件路径自动链接，`GET /files/<path>` 直接打开
 - SSE 断线自动重连（daemon 重启后视图无缝恢复）
 
 ## 部署节奏（改代码后）
