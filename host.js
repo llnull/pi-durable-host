@@ -105,8 +105,23 @@ async function openHarness({ takeover = false } = {}) {
 	return harness;
 }
 
-function getRoot(harness) {
-	return harness.root(BACKGROUND_CONTEXT, { agent: DEFAULT_AGENT });
+async function getRoot(harness) {
+	const root = await harness.root(BACKGROUND_CONTEXT, { agent: DEFAULT_AGENT });
+	await healAgentModel(root, "root 会话");
+	return root;
+}
+
+/**
+ * 会话里持久化的 agent 模型若在当前模型层解析不到（provider 被移除/改名、模型下线），
+ * 回落为本机默认模型。pi-durable 对已存在的会话不会重放 DEFAULT_AGENT，重启后旧配置
+ * 会原样生效，run 会以 no_model 失败（表现为“连不上”），所以打开会话时显式校正。
+ */
+async function healAgentModel(conv, label) {
+	const { model } = await conv.agent(BACKGROUND_CONTEXT);
+	if (model && MODEL_LAYER.models.getModel(model.provider, model.modelId)) return;
+	const from = model ? `${model.provider}/${model.modelId}` : "（未配置）";
+	await conv.configure({ model: MODEL }, BACKGROUND_CONTEXT);
+	console.error(`[model] ${label} 的模型 ${from} 已不在当前模型层，回落 ${MODEL.provider}/${MODEL.modelId}（${MODEL_LAYER.source}）`);
 }
 
 /** Resolve a session name (default = root conversation) to a Conversation. */
@@ -115,6 +130,7 @@ async function conversationFor(harness, root, name) {
 	const id = sessionConversationId(readSessions(sessionsFile(DATA_DIR)), name);
 	const conv = await harness.conversation(id, BACKGROUND_CONTEXT);
 	if (!conv) throw new Error(`会话 ${name} 指向的 conversation ${id} 不存在`);
+	await healAgentModel(conv, `会话 ${name}`);
 	return conv;
 }
 
@@ -589,6 +605,16 @@ async function cmdServe(args) {
 		const view = (await root.viewState(context)).value ?? {};
 		const inputs = (view.docs?.["pi.live"]?.run?.inputs ?? []).map(String);
 		if (inputs.length > 0) console.error(`[serve] 检测到未完成的 run（inputs: ${inputs.join(", ")}），resume() 已接管。`);
+		// 具名会话由服务端按需打开，不会走 getRoot/conversationFor；启动时统一校正残留的旧模型配置。
+		for (const [name, entry] of Object.entries(readSessions(sessionsFile(DATA_DIR)).sessions)) {
+			if (name === DEFAULT_SESSION) continue;
+			try {
+				const conv = await harness.conversation(entry.conversationId, context);
+				if (conv) await healAgentModel(conv, `会话 ${name}`);
+			} catch (error) {
+				console.error(`[model] 会话 ${name} 校正失败：${error instanceof Error ? error.message : String(error)}`);
+			}
+		}
 		await startServer({
 			harness,
 			root,
