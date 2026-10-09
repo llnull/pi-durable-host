@@ -57,6 +57,8 @@ host 不维护自己的模型配置——直接复用 pi CLI 的 `~/.pi/agent/`�
 选型顺序：`PI_DURABLE_PROVIDER=<id>` 显式指定 → `settings.json` 的 `defaultProvider` → `models.json` 自定义 provider → `auth.json` 凭证 provider。
 `PI_DURABLE_MODEL` 覆盖默认模型；`PI_DURABLE_KEY_<PROVIDER_ID>` 覆盖凭证（优先于 auth.json）；`PI_DURABLE_PI_DIR` 覆盖 pi agent 目录（默认 `~/.pi/agent`）。
 
+Web UI 的模型下拉会列出全部可用 provider（`models.json` 自定义 + `auth.json` 凭证，按 provider 分组、附模型说明），跨 provider 切换即时生效、无需重启；凭证或 api 实现不可用的 provider 自动隐藏。
+
 自定义中继示例（`~/.pi/agent/models.json`）：
 
 ```json
