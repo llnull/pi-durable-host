@@ -883,6 +883,13 @@ inputEl.addEventListener("input", (ev) => {
 
 // ---------- 会话 / 模型 / 审批 / 备份 / 重启 ----------
 function renderSessions(payload) {
+  // 协议握手（issue #33）：daemon 升级后 SSE 重连会再发 session 事件，
+  // 旧页面发现协议不一致时自动重载，不再静默冻结。
+  if (payload.proto !== undefined && payload.proto !== UI_PROTO) {
+    console.warn(`[proto] 页面协议 v${UI_PROTO} ≠ daemon v${payload.proto}，自动重载`);
+    location.reload();
+    return;
+  }
   const sel = $("sessionSel");
   sel.innerHTML = payload.sessions.map((s) => `<option value="${esc(s.name)}"${s.name === payload.current ? " selected" : ""}>${esc(s.name)}</option>`).join("");
   document.title = `Pi Durable · ${payload.current}`;
@@ -990,30 +997,41 @@ function scheduleRender(view) {
   renderTimer = requestAnimationFrame(() => {
     renderTimer = null;
     if (document.hidden) { renderPendingOnVisible = true; return; }
-    render(lastView);
+    try { render(lastView); }
+    catch (err) {
+      console.error("[ui] render 失败:", err);
+      toast("UI 渲染出错：" + err.message + "（详情见控制台；刷新页面可恢复）");
+    }
   });
 }
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden && renderPendingOnVisible) { renderPendingOnVisible = false; if (lastView) render(lastView); }
 });
 // ---------- 连接（SSE v2：view 快照 + entries/live/docs 增量帧，见 issue #27） ----------
+const UI_PROTO = 2; // 与 lib/server.js 的 SERVER_PROTO 对应
 let uiView = null;
 function applyEvent(name, data) {
-  if (name === "view") {
-    uiView = data;
-    entryCache.clear(); // 结构性重置：旧缓存可能携带过时的 call/result 配对
+  try {
+    if (name === "view") {
+      uiView = data;
+      entryCache.clear(); // 结构性重置：旧缓存可能携带过时的 call/result 配对
+    }
+    else if (!uiView) return;
+    else if (name === "entries") {
+      const list = uiView.entries ?? (uiView.entries = []);
+      for (const e of data.entries ?? []) if (!list.length || list[list.length - 1].id !== e.id) list.push(e);
+    } else if (name === "live") {
+      uiView.docs = { ...(uiView.docs ?? {}), "pi.live": data.live };
+    } else if (name === "docs") {
+      uiView.docs = { ...(uiView.docs ?? {}), ...data.docs };
+    }
+    $("conn").textContent = "已连接";
+    scheduleRender(uiView);
+  } catch (err) {
+    // 异常可见化（issue #33）：渲染链路出错时上报，而不是静默冻结
+    console.error("[ui] applyEvent " + name + " 失败:", err);
+    toast("UI 处理 " + name + " 事件出错：" + err.message + "（详情见控制台）");
   }
-  else if (!uiView) return;
-  else if (name === "entries") {
-    const list = uiView.entries ?? (uiView.entries = []);
-    for (const e of data.entries ?? []) if (!list.length || list[list.length - 1].id !== e.id) list.push(e);
-  } else if (name === "live") {
-    uiView.docs = { ...(uiView.docs ?? {}), "pi.live": data.live };
-  } else if (name === "docs") {
-    uiView.docs = { ...(uiView.docs ?? {}), ...data.docs };
-  }
-  $("conn").textContent = "已连接";
-  scheduleRender(uiView);
 }
 function connect() {
   const es = new EventSource("/api/events");
