@@ -728,7 +728,12 @@ function render(view) {
       if (gen.retry) html += `<div class="muted">⏳ 重试：${esc(gen.retry.error)} · ${new Date(gen.retry.at).toLocaleTimeString()}</div>`;
       html += `</div>`;
     }
-    for (const c of live.compactions ?? []) html += `<div class="live-block"><div class="t">🗜 压缩（${esc(c.reason)}${c.blocking ? " · 阻塞中" : ""}）</div></div>`;
+    for (const c of live.compactions ?? []) {
+      const label = { threshold: "阈值", overflow: "溢出", manual: "手动" }[c.reason] ?? c.reason;
+      html += `<div class="live-block"><div class="t">🗜 压缩（${esc(label)}${c.blocking ? " · 阻塞生成" : " · 后台"}，第 ${c.attempt + 1} 次）</div>`;
+      if (c.retry) html += `<div class="muted">⏳ 压缩重试：${esc(c.retry.error)} · ${new Date(c.retry.at).toLocaleTimeString()}</div>`;
+      html += `</div>`;
+    }
     $("liveBody").innerHTML = html || `<div class="muted">运行中…</div>`;
   } else lp.style.display = "none";
 
