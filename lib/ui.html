@@ -77,6 +77,14 @@
   .side { display: flex; flex-direction: column; gap: 14px; min-width: 0; min-height: 0; overflow-y: auto; }
   .side .panel { overflow: hidden; }
   .panel h3 { margin: 0 0 8px; font-size: 13px; color: var(--faint); font-weight: 600; letter-spacing: .06em; }
+  .side .panel > h3 { cursor: pointer; user-select: none; display: flex; align-items: center; gap: 6px; }
+  .side .panel > h3:hover { color: var(--soft); }
+  .side .panel > h3 .pcaret { margin-left: auto; font-size: 10px; transition: transform .15s; }
+  .side .panel.collapsed > h3 { margin-bottom: 0; }
+  .side .panel.collapsed > :not(h3) { display: none !important; }
+  .side .panel.collapsed > h3 .pcaret { transform: rotate(-90deg); }
+  .pbadge { display: none; background: var(--red); color: #fff; border-radius: 999px; font-size: 10px; line-height: 1; padding: 3px 7px; font-weight: 600; }
+  .pbadge.on { display: inline-block; }
 
   /* ===== run 分组 ===== */
   .run { border: 1px solid var(--line); border-radius: 12px; margin: 12px 0; background: var(--paper); overflow: hidden; }
@@ -278,7 +286,7 @@
     <div class="panel" id="approvalPanel" style="display:none">
       <h3>审批（host-guard）</h3><div id="approvalBody"></div>
     </div>
-    <div class="panel">
+    <div class="panel" id="usagePanel">
       <h3>用量与会话</h3><div id="usageBody" class="muted">…</div>
     </div>
     <div class="panel" id="tasksPanel" style="display:none">
@@ -770,6 +778,7 @@ function render(view) {
       return `<div class="kv"><b>${it.mode === "steer" ? "转向" : it.mode === "write" ? "写入" : "排队"}</b> · ${esc(String(text).slice(0, 120))}</div>`;
     }).join("");
   } else ip.style.display = "none";
+  setPanelBadge("inboxPanel", inbox.length);
   const usage = view.docs?.["pi.usage"] ?? { models: {} };
   const sum = { input: 0, output: 0, cacheRead: 0 };
   const cost = { total: 0, known: false };
@@ -1221,7 +1230,7 @@ async function refreshApprovals() {
   try {
     const { approved, pending } = await api("/api/approvals");
     const panel = $("approvalPanel");
-    if (!pending.length && !approved.length) { panel.style.display = "none"; approvalsHtml = ""; return; }
+    if (!pending.length && !approved.length) { panel.style.display = "none"; approvalsHtml = ""; setPanelBadge("approvalPanel", 0); return; }
     let html = "";
     for (const item of pending) {
       html += `<div class="kv"><b>⛔ ${esc(item.why ?? "危险命令")}</b> · ${esc(item.blockedAt ?? "")}
@@ -1235,6 +1244,7 @@ async function refreshApprovals() {
     approvalsHtml = html;
     panel.style.display = "";
     $("approvalBody").innerHTML = html;
+    setPanelBadge("approvalPanel", pending.length);
   } catch {}
 }
 $("approvalBody").addEventListener("click", async (ev) => {
@@ -1248,6 +1258,42 @@ $("approvalBody").addEventListener("click", async (ev) => {
   } catch (err) { toast(err.message); }
 });
 setInterval(refreshApprovals, 5000);
+// ---------- 侧栏面板折叠 ----------
+const sideCollapsed = new Set(JSON.parse(localStorage.getItem("sideCollapsed") ?? "[]"));
+function applyPanelCollapsed(p) {
+  const off = sideCollapsed.has(p.id);
+  p.classList.toggle("collapsed", off);
+  const caret = p.querySelector(".pcaret");
+  if (caret) caret.textContent = off ? "▸" : "▾";
+}
+for (const p of document.querySelectorAll(".side .panel")) {
+  const h = p.querySelector("h3");
+  if (!h) continue;
+  const caret = document.createElement("span");
+  caret.className = "pcaret";
+  caret.textContent = "▾";
+  h.appendChild(caret);
+  h.addEventListener("click", () => {
+    sideCollapsed.has(p.id) ? sideCollapsed.delete(p.id) : sideCollapsed.add(p.id);
+    localStorage.setItem("sideCollapsed", JSON.stringify([...sideCollapsed]));
+    applyPanelCollapsed(p);
+  });
+  applyPanelCollapsed(p);
+}
+/** 折叠态下的状态可见性：面板标题上的计数徽标（0 时隐藏） */
+function setPanelBadge(id, n) {
+  const h = $(id)?.querySelector("h3");
+  if (!h) return;
+  let b = h.querySelector(".pbadge");
+  if (!b) {
+    b = document.createElement("span");
+    b.className = "pbadge";
+    h.insertBefore(b, h.querySelector(".pcaret"));
+  }
+  b.textContent = n > 0 ? String(n) : "";
+  b.classList.toggle("on", n > 0);
+}
+
 refreshApprovals(); loadSessions(); loadModels(); loadCommands();
 
 $("btnBackup").onclick = async () => {
