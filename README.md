@@ -112,6 +112,21 @@ CLI 命令（ask / history / status / tasks / sessions / approve / config / back
 `ask --session <name>` 可以直接对非当前会话提问。`sessions new|switch|delete` 管理映射
 （delete 只解除映射，conversation 数据保留在存储中）。
 
+## 忙时输入语义（whenBusy）
+
+会话正在生成时发新消息，行为由 `POST /api/ask` 的 `whenBusy` 决定（无独立 /api/steer 端点；
+UI 输入区在忙时自动出现「排队/转向」选择）。这是 pi-durable 的内建语义，host 未加配置项：
+
+| whenBusy | 行为 | 典型用途 |
+|---|---|---|
+| `followUp`（默认） | **排队**：生成结束后作为新输入依次执行 | 连续下达多条独立指令 |
+| `steer` | **转向**：插入当前运行的下一轮，模型在本次生成内看到它 | 纠偏（"别用 rm，用 mv"）、补充约束 |
+| `reject` | 忙时直接拒绝（HTTP 409） | 自动化脚本要求互斥时 |
+
+排队与转向的消息都进入 transcript 的 `pi.inbox`（侧栏 inbox 面板可见，标注模式）；
+转向消息还会出现在当前 run 分组内（标「转向」标签）。队列不落模型 context 之外的持久状态，
+重启后由 submission 索引恢复。
+
 ## 危险命令审批（host-guard）
 
 guard 拦截危险 bash 命令时，命令进入 `data/approvals-pending.json` 待批清单：
