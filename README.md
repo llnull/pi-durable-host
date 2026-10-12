@@ -2,6 +2,8 @@
 
 [`@earendil-works/pi-durable`](https://github.com/llnull/pi-durable)（实验性，API 随版本变动）的本地 host：把持久化 agent 会话跑在 SQLite（WAL）上，提供 **Web UI / CLI / REST API** 三种入口。进程崩溃可恢复，改代码后热重启零数据损失。
 
+> 实现说明（目录结构、关键机制、设计原则）见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+
 ## 快速开始
 
 ```bash
@@ -162,75 +164,24 @@ bash 命令命中危险模式（`sudo`、`rm -r/-f`、`mkfs`、`dd of=/dev/*`、
 
 ### 单写者模型（重要）
 
-pi-durable 存储无跨进程锁：**一个存储同一时刻只能被一个进程打开**。host.js 每个存储命令都持有
-`data/host.lock`（记录 PID），持有者存活时其他进程拒绝启动，已死时自动接管（`--takeover` 可等待接管）。
-**推荐姿势：跑一个 `serve` 常驻进程作为唯一持有者**，其余一切（人、脚本、UI、CLI）走它的 HTTP 接口——
-serve 运行期间 CLI 命令自动转发，不再被锁拒绝。
+pi-durable 存储无跨进程锁：**一个存储同一时刻只能被一个进程打开**。host 用 `data/host.lock` 互斥：
+持有者存活时其他进程拒绝启动，已死时自动接管。**推荐姿势：跑一个 `serve` 常驻进程作为唯一持有者**，
+其余一切（人、脚本、UI、CLI）走它的 HTTP 接口——serve 运行期间 CLI 命令自动转发，不再被锁拒绝。
 
 ## 运维
 
 ### 备份
 
-`node host.js backup` / `POST /api/backup`：daemon 在自己进程内开第二个 SQLite 连接执行 `VACUUM INTO`，
-拿到与 WAL 一致的快照，**不暂停任何 run**。默认存 `data/backups/`，保留最新 20 份。
+`node host.js backup` / `POST /api/backup`：在线一致性快照，**不暂停任何 run**。默认存 `data/backups/`，保留最新 20 份。
 
 ### 热重启
 
-`node host.js restart` / `POST /api/restart`：daemon 先派生 detached 后继进程（`serve --takeover`，
-最长等锁 60s），再优雅关闭退出；后继接管锁后 `resume()` 接续所有未完成的 run。Web UI 的 SSE 自动重连。
-典型用途：改完 host 代码后零数据损失升级。
-
-**踩坑记录**：daemon 停止时运行中的工具调用会被 `killProcessTree` 按进程组 SIGKILL——从工具里 nohup
-出来的后台脚本会一起被杀（nohup 只免 SIGHUP 不换进程组；macOS 无 setsid）。需要跨 daemon 存活的工作
-必须独立会话 detached spawn，或走 `/api/restart`（后继由 daemon 自身派生，不在工具进程树里）。
-
-**防护（issue #25 / #28）**：① 工具子进程携带 `PI_DURABLE_HOSTED_BY` 标记，hosted 环境内 CLI `restart`
-一律拒绝（重放循环）、`ask` 默认拒绝（followUp 环等死锁），仅 `--session` 旁路会话放行；
-② `/api/restart` 15s 防抖窗口（`data/restart.marker`，跨世代生效、过期自愈）。
+`node host.js restart` / `POST /api/restart`：后继进程接管，未完成 run 自动 `resume()`。Web UI 的 SSE 自动重连。
+典型用途：改完 host 代码后零数据损失升级。实现细节与踩坑记录见 [ARCHITECTURE](docs/ARCHITECTURE.md)。
 
 ### 工具耗时
 
 `node host.js timing [n]`：`data/tool-timing.log` 汇总（每工具 n/avg/p50/p95/max）+ 最近 n 条。
-
-## 目录结构
-
-源码：
-
-| 路径 | 说明 |
-|---|---|
-| `host.js` | CLI 入口（ask/history/context/wait/status/tasks/sessions/approve/backup/timing/restart/serve/config） |
-| `lib/server.js` | 常驻 daemon：HTTP + SSE 增量推送 + REST API |
-| `lib/ui.html` | Web UI（单文件，无构建步骤） |
-| `lib/models.js` | 模型层（复用 `~/.pi/agent` 配置） |
-| `lib/extensions.js` | 自建扩展：项目上下文 / host-guard（审批流）/ host-team（subagent） |
-| `lib/sessions.js` | 命名会话映射 |
-| `lib/approvals.js` | 批准/待批清单（guard / CLI / daemon / UI 共用） |
-| `lib/backup.js` | VACUUM INTO 快照 |
-| `lib/lock.js` | 单写者锁（PID 存活检查） |
-| `lib/daemon.js` | serve.json 发现 + CLI→daemon 转发 |
-| `lib/format.js` | CLI 输出格式化（本地直连与 daemon 转发输出一致） |
-| `test/` | node:test 单测（guard 纯函数等） |
-
-运行时数据（`data/`，不入库）：
-
-| 路径 | 说明 |
-|---|---|
-| `session.sqlite` | 持久化存储（WAL） |
-| `host.lock` | 单写者锁 |
-| `serve.json` | daemon 运行信息（pid/port/host） |
-| `sessions.json` | 会话名 ↔ conversation 映射 |
-| `approvals*.json` | 批准清单 / 待批清单 |
-| `tool-timing.log` | 工具耗时日志（1MB 轮转） |
-| `serve.log` | daemon 日志（1MB 轮转） |
-| `backups/` | 备份快照 |
-| `workspace/` | agent 工具的默认 cwd |
-
-## 设计原则
-
-- **复用而非重造**：模型配置完全复用 pi CLI；fork/压缩/steer 语义全部走 pi-durable 库 API，host 只做注册与展示
-- **不编造数据**：费率未知就不显示金额；重试/压缩状态如实呈现
-- **账本与 context 分离**：审计用自定义 entry（`host.config`），只进 transcript 不进模型 context
-- **可恢复优先**：一切状态入 SQLite，重启靠 resume 而非约定 UI 状态
 
 ## 已知限制
 
