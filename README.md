@@ -20,7 +20,7 @@ node host.js ask "列出本目录结构"   # 或者直接 CLI 提问
 <details>
 <summary>静态截图</summary>
 
-![Web UI 预览](docs/ui-preview.png)
+![Web UI 演示：提问 → 流式生成 → 完成](docs/ui-preview.gif)
 
 </details>
 
