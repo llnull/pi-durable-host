@@ -65,6 +65,7 @@ Web UI 的模型下拉会列出全部可用 provider（`models.json` 自定义 +
 - `@`：模糊补全会话工作区文件（`@相对路径` 以文本插入，模型用 read 工具自取内容）
 - 悬停用户消息 → **⑂ 分叉**：从该提问分叉出新会话（`Conversation.fork`，上下文与 agent 配置复制到该处、provider 身份全新），新会话里换个说法重问即「从此重试」，原会话不变
 - 配置变更（模型/工作目录/指令）自动写入 `host.config` 审计条目：只进 transcript 账本（回放可见），**不进模型 context**（自定义 kind 无 model 字段，天然零贡献）
+- run 头部悬停 → **⚿ 上下文**：查看该提问处模型实际看到的 context（`Conversation.context(at)`，fork 起点同源），调试 steer/压缩边界/上下文漂移
 
 自定义中继示例（`~/.pi/agent/models.json`）：
 
@@ -144,6 +145,8 @@ node host.js serve [端口=7600] [--host 127.0.0.1] [--takeover]
 #   POST /api/sessions { action: new|switch|delete, name }
 #   POST /api/fork     { entryId, name? }  从历史条目分叉新会话（Conversation.fork）并切换；
 #                                          UI 里悬停用户消息 → ⑂ 按钮触发
+#   GET  /api/context  ?entryId=n        调试视图：该条目处的模型上下文（Conversation.context(at)，
+#                                          即 fork(at) 会看到的起点）；host.js context <entryId> 同源
 #   POST /api/approve  { command } | /api/approve/revoke { index } | /api/approvals/dismiss { command }
 #   POST /api/backup   { file? }
 #   POST /api/restart  热重启（见上）
