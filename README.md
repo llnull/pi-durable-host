@@ -67,6 +67,15 @@ Web UI 的模型下拉会列出全部可用 provider（`models.json` 自定义 +
 - 配置变更（模型/工作目录/指令）自动写入 `host.config` 审计条目：只进 transcript 账本（回放可见），**不进模型 context**（自定义 kind 无 model 字段，天然零贡献）
 - run 头部悬停 → **⚿ 上下文**：查看该提问处模型实际看到的 context（`Conversation.context(at)`，fork 起点同源），调试 steer/压缩边界/上下文漂移
 
+### 自动化集成
+
+备份/外部脚本在动作前等待会话空闲（重启用 resume，无需此步；这是给**外部进程**的一致性保证）：
+
+```bash
+# 等待最多 60s；idle=false 时自行决定跳过或重试
+curl -s -X POST http://127.0.0.1:7600/api/wait-idle -d '{"timeoutMs":60000}'
+```
+
 自定义中继示例（`~/.pi/agent/models.json`）：
 
 ```json
@@ -147,6 +156,8 @@ node host.js serve [端口=7600] [--host 127.0.0.1] [--takeover]
 #                                          UI 里悬停用户消息 → ⑂ 按钮触发
 #   GET  /api/context  ?entryId=n        调试视图：该条目处的模型上下文（Conversation.context(at)，
 #                                          即 fork(at) 会看到的起点）；host.js context <entryId> 同源
+#   POST /api/wait-idle { timeoutMs?, session? }  等待会话空闲（无活跃非后台任务），超时返回 { idle: false }；
+#                                          外部自动化（备份/脚本）在动作前调用以保证一致性
 #   POST /api/approve  { command } | /api/approve/revoke { index } | /api/approvals/dismiss { command }
 #   POST /api/backup   { file? }
 #   POST /api/restart  热重启（见上）
