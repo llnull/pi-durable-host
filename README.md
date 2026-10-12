@@ -63,6 +63,7 @@ Web UI 的模型下拉会列出全部可用 provider（`models.json` 自定义 +
 
 - `/`：命令面板（↑↓/Enter/Esc 导航）——host 命令（`/model` `/cwd` `/instructions` `/session` `/approve` `/restart` `/help`）+ **pi 自定义命令**（`~/.pi/agent/prompts/*.md` 与 `<cwd>/.pi/prompts/*.md`，frontmatter 的 `description`/`argument-hint` 用于展示）；自定义命令由 UI 端按 pi 的参数语义（`$ARGUMENTS`/`$1`/`${n:-默认}`/`${@:start:len}`）展开后发送，模板本身与 pi CLI 同源共享
 - `@`：模糊补全会话工作区文件（`@相对路径` 以文本插入，模型用 read 工具自取内容）
+- 悬停用户消息 → **⑂ 分叉**：从该提问分叉出新会话（`Conversation.fork`，上下文与 agent 配置复制到该处、provider 身份全新），新会话里换个说法重问即「从此重试」，原会话不变
 
 自定义中继示例（`~/.pi/agent/models.json`）：
 
@@ -140,6 +141,8 @@ node host.js serve [端口=7600] [--host 127.0.0.1] [--takeover]
 #   POST /api/reset    { note? }
 #   POST /api/config   { cwd? / instructions? / model? }   ← UI 模型切换器也走这里
 #   POST /api/sessions { action: new|switch|delete, name }
+#   POST /api/fork     { entryId, name? }  从历史条目分叉新会话（Conversation.fork）并切换；
+#                                          UI 里悬停用户消息 → ⑂ 按钮触发
 #   POST /api/approve  { command } | /api/approve/revoke { index } | /api/approvals/dismiss { command }
 #   POST /api/backup   { file? }
 #   POST /api/restart  热重启（见上）
