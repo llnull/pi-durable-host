@@ -747,12 +747,18 @@ function render(view) {
       return `<div class="kv"><b>${it.mode === "steer" ? "转向" : it.mode === "write" ? "写入" : "排队"}</b> · ${esc(String(text).slice(0, 120))}</div>`;
     }).join("");
   } else ip.style.display = "none";
-
   const usage = view.docs?.["pi.usage"] ?? { models: {} };
   const sum = { input: 0, output: 0, cacheRead: 0 };
-  for (const u of Object.values(usage.models ?? {})) { sum.input += u.input ?? 0; sum.output += u.output ?? 0; sum.cacheRead += u.cacheRead ?? 0; }
+  const cost = { total: 0, known: false };
+  const modelRows = Object.entries(usage.models ?? {}).map(([key, u]) => {
+    sum.input += u.input ?? 0; sum.output += u.output ?? 0; sum.cacheRead += u.cacheRead ?? 0;
+    const c = u.cost?.total ?? 0;
+    if (c > 0 || u.cost?.input > 0 || u.cost?.output > 0) { cost.total += c; cost.known = true; }
+    return `<div class="kv"><code class="md-inline">${esc(key)}</code> <span class="muted">${(u.input ?? 0).toLocaleString()} / ${(u.output ?? 0).toLocaleString()} / ${(u.cacheRead ?? 0).toLocaleString()} tok${c > 0 ? ` · $${c.toFixed(4)}` : ""}</span></div>`;
+  }).join("");
   $("usageBody").innerHTML =
-    `<div class="kv">模型输入 <b>${sum.input.toLocaleString()}</b> · 输出 <b>${sum.output.toLocaleString()}</b> · 缓存读 <b>${sum.cacheRead.toLocaleString()}</b> tokens</div>` +
+    `<div class="kv">输入 <b>${sum.input.toLocaleString()}</b> · 输出 <b>${sum.output.toLocaleString()}</b> · 缓存读 <b>${sum.cacheRead.toLocaleString()}</b> tokens${cost.known ? ` · <b>$${cost.total.toFixed(4)}</b>` : ""}</div>` +
+    modelRows +
     `<div class="kv">会话 ID <b>${esc(view.conversation?.id ?? "?")}</b> · 条目 <b>${entries.length}</b> · 对话轮次 <b>${groups.filter((g) => g.type === "run").length}</b></div>`;
 }
 
