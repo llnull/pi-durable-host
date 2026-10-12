@@ -59,6 +59,8 @@
   }
   .toolbar .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
   .toolbar .mini { border: 1px solid var(--line); background: var(--paper); color: var(--soft); border-radius: 9px; padding: 5px 10px; font-size: 12.5px; cursor: pointer; }
+  .toolbar .mini:hover:not(:disabled) { border-color: var(--accent-line); color: var(--ink); }
+  .toolbar .mini:disabled { opacity: .45; cursor: not-allowed; }
 
   /* --shell-max：内容壳宽度档位（宽屏逐级放宽）；专注模式（body.layout-focus）收起侧栏并收窄为阅读列宽 */
   :root { --shell-max: 1200px; --focus-max: 1000px; --pad-x: 14px; }
@@ -235,7 +237,18 @@
     .composer .hint { display: none; }
     .state { display: none; }
   }
+  /* 细滚动条：内容长滚动区不再出现粗滚动条 */
+  #transcript, .side, .modal-body, .palette { scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+
+  /* 触屏无 hover：分叉/上下文按钮常显，否则永远点不到 */
+  @media (hover: none) {
+    .fork-btn { visibility: visible; }
+    .run-head .ctx-btn { opacity: 1; }
+  }
+
   .toast { position: fixed; top: 54px; left: 50%; transform: translateX(-50%); background: var(--red-bg); color: var(--red); border: 1px solid #f2c4c0; border-radius: 10px; padding: 8px 16px; font-size: 13px; z-index: 99; display: none; }
+  .toast.ok { background: var(--green-bg); color: var(--green); border-color: color-mix(in srgb, var(--green) 35%, transparent); }
+  .toast.info { background: var(--paper); color: var(--soft); border-color: var(--line); box-shadow: 0 4px 14px rgba(26,34,51,.12); }
   #conn { font-size: 12px; }
   .filelink { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; word-break: break-all; }
   .filelink:hover { background: var(--accent-soft); }
@@ -257,9 +270,9 @@
   <span id="conn" class="badge dim">连接中…</span>
   <button id="btnBackup" title="VACUUM INTO 快照到 data/backups/">备份</button>
   <button id="btnRestart" title="热重启 daemon（运行中的 run 由新进程 resume）">重启</button>
-  <button id="btnTasks">任务图</button>
+  <button id="btnTasks" title="打开任务图面板（后台任务的状态与层级）">任务图</button>
   <button id="btnFiles" title="浏览 agent 工作区文件（点击在新窗口打开）">文件</button>
-  <button id="btnCompact">压缩</button>
+  <button id="btnCompact" title="提交压缩任务：后台总结旧上下文，不阻塞当前工作">压缩</button>
   <button id="btnReset">重置上下文</button>
 </header>
 
@@ -268,8 +281,7 @@
   <span class="chip on" data-filter="all">全部</span>
   <span class="chip" data-filter="tools">含工具调用</span>
   <span class="chip" data-filter="steer">转向</span>
-  <button class="mini" id="btnExpand">全部展开</button>
-  <button class="mini" id="btnCollapse">全部收起</button>
+  <button class="mini" id="btnToggleAll" disabled title="展开/收起全部对话轮次">全部展开</button>
   <button class="mini" id="btnBottom">跳到最新 ↓</button>
   <button class="chip" id="chipFocus" title="专注模式：收起侧栏，收窄为阅读列宽（再次点击恢复）">专注</button>
 </div>
@@ -350,7 +362,15 @@ let filterMode = "all";
 let hasRendered = false;
 let followBottom = true;      // 视图跟随：内容更新时自动滚到最新（用户上翻阅读时自动关闭）
 
-function toast(msg) { const t = $("toast"); t.textContent = msg; t.style.display = "block"; setTimeout(() => (t.style.display = "none"), 4000); }
+let toastTimer;
+function toast(msg, kind = "err") {
+  const t = $("toast");
+  t.textContent = msg;
+  t.className = "toast" + (kind === "err" ? "" : ` ${kind}`);
+  t.style.display = "block";
+  clearTimeout(toastTimer); // 连续提示时避免前一个定时器提前隐藏后一个
+  toastTimer = setTimeout(() => (t.style.display = "none"), 4000);
+}
 async function api(path, opts) {
   const res = await fetch(path, { headers: { "content-type": "application/json" }, ...opts });
   const body = await res.json().catch(() => ({}));
@@ -658,6 +678,13 @@ function render(view) {
   const groups = groupRuns(entries);
   const q = $("search").value.trim().toLowerCase();
 
+  // 展开/收起一体按钮：展示将要执行的动作；搜索过滤中轮次被强制展开，按钮不可用
+  const runGroups = groups.filter((g) => g.type === "run");
+  const allOpen = runGroups.length > 0 && runGroups.every((g) => expanded.has(String(g.firstId)));
+  const toggleAllBtn = $("btnToggleAll");
+  toggleAllBtn.textContent = allOpen ? "全部收起" : "全部展开";
+  toggleAllBtn.disabled = !runGroups.length || Boolean(q);
+
   // 最后一轮（或新出现的轮次）自动展开
   if (groups.length) {
     const lastRun = [...groups].reverse().find((g) => g.type === "run");
@@ -673,7 +700,7 @@ function render(view) {
 
   if (!groups.length) {
     runEls.clear();
-    t.innerHTML = `<div class="muted">（无匹配内容）</div>`;
+    t.innerHTML = `<div class="muted">${entries.length ? "（无匹配内容）" : "（暂无对话 · 在下方输入第一条指令）"}</div>`;
   } else {
     let runNo = 0;
     const desiredOrder = [];
@@ -806,7 +833,7 @@ $("transcript").addEventListener("click", async (ev) => {
     try {
       const r = await api("/api/fork", { method: "POST", body: JSON.stringify({ entryId: forkBtn.dataset.fork }) });
       expanded.clear(); hasRendered = false;
-      toast(`已分叉并切换到 ${r.session}`);
+      toast(`已分叉并切换到 ${r.session}`, "ok");
     } catch (err) { toast("分叉失败：" + err.message); }
     return;
   }
@@ -849,8 +876,14 @@ document.querySelectorAll(".chip").forEach((chip) => {
 });
 let searchTimer = null; // 搜索防抖（#27 P1）：高频键入时避免全量重算 hay 匹配
 $("search").addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(rerender, 200); });
-$("btnExpand").onclick = () => { if (lastView) for (const g of groupRuns((lastView.entries ?? []).filter((e) => e.kind !== "head"))) if (g.type === "run") expanded.add(String(g.firstId)); rerender(); };
-$("btnCollapse").onclick = () => { expanded.clear(); rerender(); };
+$("btnToggleAll").onclick = () => {
+  if (!lastView) return;
+  const runs = groupRuns((lastView.entries ?? []).filter((e) => e.kind !== "head")).filter((g) => g.type === "run");
+  const allOpen = runs.length > 0 && runs.every((g) => expanded.has(String(g.firstId)));
+  if (allOpen) expanded.clear();
+  else for (const g of runs) expanded.add(String(g.firstId));
+  rerender();
+};
 $("btnBottom").onclick = () => { followBottom = true; $("transcript").scrollTo({ top: $("transcript").scrollHeight, behavior: "smooth" }); };
 // ---------- 专注模式：收起侧栏 + 阅读列宽（localStorage 记忆；未设置时窄屏默认开启） ----------
 const FOCUS_KEY = "pi-durable-focus";
@@ -894,7 +927,7 @@ async function send(whenBusy) {
       const tpl = customCommands.find((c) => c.name === name);
       if (tpl) {
         const expandedText = substituteArgs(tpl.body, parseCommandArgs(args ?? "")).trim();
-        if (!expandedText) { toast(`命令模板为空：/${name}`); return; }
+        if (!expandedText) { toast(`命令模板为空：/${name}`, "info"); return; }
         content = expandedText;
       }
     }
@@ -913,13 +946,13 @@ $("btnAbort").onclick = async () => { try { await api("/api/abort", { method: "P
 $("btnCompact").onclick = async () => {
   const instructions = prompt("压缩指令（可留空）：");
   if (instructions === null) return;
-  try { await api("/api/compact", { method: "POST", body: JSON.stringify({ instructions }) }); toast("压缩任务已提交"); }
+  try { await api("/api/compact", { method: "POST", body: JSON.stringify({ instructions }) }); toast("压缩任务已提交", "ok"); }
   catch (err) { toast(err.message); }
 };
 $("btnReset").onclick = async () => {
   if (!confirm("重置后模型将看不到更早的条目（存储仍保留）。继续？")) return;
   const note = prompt("交接便签（可留空）：") ?? undefined;
-  try { await api("/api/reset", { method: "POST", body: JSON.stringify({ note }) }); toast("已提交重置"); }
+  try { await api("/api/reset", { method: "POST", body: JSON.stringify({ note }) }); toast("已提交重置", "ok"); }
   catch (err) { toast(err.message); }
 };
 // 任务图：点击切换显示/隐藏；打开时随 render 每 3s 自动刷新
@@ -1021,30 +1054,30 @@ const HOST_COMMANDS = [
   { name: "model", desc: "切换模型（打开顶部下拉）", exec: async () => {
       const s = $("modelSel");
       if (s.showPicker) { try { s.showPicker(); return; } catch {} }
-      s.focus(); toast("请从顶部模型下拉选择");
+      s.focus(); toast("请从顶部模型下拉选择", "info");
     } },
   { name: "cwd", desc: "修改会话工作目录", arg: "<path>", exec: async (a) => {
-      if (!a) { toast("用法：/cwd <path>"); return; }
-      await api("/api/config", { method: "POST", body: JSON.stringify({ cwd: a }) }); toast(`cwd 已切换：${a}`);
+      if (!a) { toast("用法：/cwd <path>", "info"); return; }
+      await api("/api/config", { method: "POST", body: JSON.stringify({ cwd: a }) }); toast(`cwd 已切换：${a}`, "ok");
     } },
   { name: "instructions", desc: "设置会话指令", arg: "<text>", exec: async (a) => {
-      if (!a) { toast("用法：/instructions <text>"); return; }
-      await api("/api/config", { method: "POST", body: JSON.stringify({ instructions: a }) }); toast("instructions 已更新");
+      if (!a) { toast("用法：/instructions <text>", "info"); return; }
+      await api("/api/config", { method: "POST", body: JSON.stringify({ instructions: a }) }); toast("instructions 已更新", "ok");
     } },
   { name: "session", desc: "切换或创建会话", arg: "<name>", exec: async (a) => {
       const p = await api("/api/sessions");
-      if (!a) { toast(p.sessions.map((s) => s.name).join(" · ") || "（无会话）"); return; }
+      if (!a) { toast(p.sessions.map((s) => s.name).join(" · ") || "（无会话）", "info"); return; }
       const exists = p.sessions.some((s) => s.name === a);
       await api("/api/sessions", { method: "POST", body: JSON.stringify({ action: exists ? "switch" : "new", name: a }) });
       expanded.clear(); hasRendered = false;
-      toast(exists ? `已切换到 ${a}` : `已创建并切换到 ${a}`);
+      toast(exists ? `已切换到 ${a}` : `已创建并切换到 ${a}`, "ok");
     } },
   { name: "approve", desc: "批准待审批命令", arg: "[command]", exec: async (a) => {
-      if (a) { await api("/api/approve", { method: "POST", body: JSON.stringify({ command: a }) }); toast(`已批准：${a}`); return; }
+      if (a) { await api("/api/approve", { method: "POST", body: JSON.stringify({ command: a }) }); toast(`已批准：${a}`, "ok"); return; }
       const { pending } = await api("/api/approvals");
-      if (!pending?.length) { toast("没有待审批项"); return; }
+      if (!pending?.length) { toast("没有待审批项", "info"); return; }
       for (const it of pending) await api("/api/approve", { method: "POST", body: JSON.stringify({ command: it.command }) });
-      toast(`已批准 ${pending.length} 项`);
+      toast(`已批准 ${pending.length} 项`, "ok");
     } },
   { name: "restart", desc: "热重启 daemon（运行中的 run 由后继进程 resume）", exec: async () => {
       if (!confirm("热重启 daemon？运行中的 run 会由后继进程 resume 接续，SSE 自动重连。")) return;
@@ -1185,14 +1218,14 @@ $("sessionSel").onchange = async () => {
 $("btnNewSession").onclick = async () => {
   const name = prompt("新会话名（字母/数字开头，可含 _ . -）：");
   if (!name) return;
-  try { await api("/api/sessions", { method: "POST", body: JSON.stringify({ action: "new", name }) }); expanded.clear(); hasRendered = false; toast(`已创建并切换到 ${name}`); }
+  try { await api("/api/sessions", { method: "POST", body: JSON.stringify({ action: "new", name }) }); expanded.clear(); hasRendered = false; toast(`已创建并切换到 ${name}`, "ok"); }
   catch (err) { toast("创建失败：" + err.message); }
 };
 $("btnDelSession").onclick = async () => {
   const name = $("sessionSel").value;
-  if (name === "default") { toast("default 会话不可删除"); return; }
+  if (name === "default") { toast("default 会话不可删除", "info"); return; }
   if (!confirm(`删除会话 ${name}？（conversation 数据仍在存储中，仅解除映射）`)) return;
-  try { await api("/api/sessions", { method: "POST", body: JSON.stringify({ action: "delete", name }) }); toast(`已删除 ${name}`); }
+  try { await api("/api/sessions", { method: "POST", body: JSON.stringify({ action: "delete", name }) }); toast(`已删除 ${name}`, "ok"); }
   catch (err) { toast(err.message); }
 };
 
@@ -1221,7 +1254,7 @@ async function loadModels() {
 $("modelSel").onchange = async () => {
   const sel = $("modelSel");
   const provider = sel.selectedOptions[0]?.dataset.provider || sel.dataset.provider;
-  try { await api("/api/config", { method: "POST", body: JSON.stringify({ model: { provider, modelId: sel.value } }) }); toast(`模型已切换：${provider}/${sel.value}（当前会话持久生效）`); }
+  try { await api("/api/config", { method: "POST", body: JSON.stringify({ model: { provider, modelId: sel.value } }) }); toast(`模型已切换：${provider}/${sel.value}（当前会话持久生效）`, "ok"); }
   catch (err) { toast("切换失败：" + err.message); loadModels(); }
 };
 
@@ -1251,7 +1284,7 @@ $("approvalBody").addEventListener("click", async (ev) => {
   const btn = ev.target.closest("button");
   if (!btn) return;
   try {
-    if (btn.dataset.approve) { await api("/api/approve", { method: "POST", body: JSON.stringify({ command: btn.dataset.approve }) }); toast("已批准，可让 agent 重试原命令"); }
+    if (btn.dataset.approve) { await api("/api/approve", { method: "POST", body: JSON.stringify({ command: btn.dataset.approve }) }); toast("已批准，可让 agent 重试原命令", "ok"); }
     else if (btn.dataset.dismiss) { await api("/api/approvals/dismiss", { method: "POST", body: JSON.stringify({ command: btn.dataset.dismiss }) }); }
     else if (btn.dataset.revoke) { await api("/api/approve/revoke", { method: "POST", body: JSON.stringify({ index: +btn.dataset.revoke }) }); }
     approvalsHtml = ""; await refreshApprovals();
@@ -1297,7 +1330,7 @@ function setPanelBadge(id, n) {
 refreshApprovals(); loadSessions(); loadModels(); loadCommands();
 
 $("btnBackup").onclick = async () => {
-  try { const { file } = await api("/api/backup", { method: "POST", body: "{}" }); toast("已备份：" + file); }
+  try { const { file } = await api("/api/backup", { method: "POST", body: "{}" }); toast("已备份：" + file, "ok"); }
   catch (err) { toast(err.message); }
 };
 $("btnRestart").onclick = async () => {
