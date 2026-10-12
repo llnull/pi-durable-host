@@ -152,6 +152,7 @@
   .composer { flex: none; background: var(--bg); border-top: 1px solid var(--line); padding: 10px var(--pad-x) 12px; }
   /* 输入框与内容列同轴：左边缘 = 聊天主列左边缘，宽度 = 主列宽（shell − 2×pad − 300 侧栏 − 14 间距） */
   .composer .inner {
+    position: relative;
     margin-left: max(var(--pad-x), calc((100% - var(--shell-max)) / 2 + var(--pad-x)));
     width: calc(min(100%, var(--shell-max)) - var(--pad-x) * 2 - 314px); margin-right: auto; background: var(--paper);
     border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 4px 18px rgba(26,34,51,.08);
@@ -173,6 +174,17 @@
   .composer .row { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
   .composer .hint { flex: 1; min-width: 0; font-size: 11.5px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .composer .count { font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; }
+  /* 快捷操作弹层：/ 命令面板 + @ 文件补全（issue #35） */
+  .composer .palette {
+    position: absolute; left: 0; right: 0; bottom: calc(100% + 8px);
+    max-height: 260px; overflow: auto; overscroll-behavior: contain;
+    background: var(--bg); border: 1px solid var(--line); border-radius: 10px;
+    box-shadow: 0 -10px 28px rgba(0,0,0,.14); z-index: 40; padding: 4px;
+  }
+  .palette .pi-item { display: flex; align-items: baseline; gap: 10px; padding: 6px 10px; border-radius: 7px; cursor: pointer; font-size: 13px; }
+  .palette .pi-item.active { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+  .palette .pi-item .t { flex: none; font-weight: 600; }
+  .palette .pi-item .d { flex: 1; min-width: 0; color: var(--faint); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .state { display: inline-flex; align-items: center; gap: 5px; flex: none; font-size: 11.5px; font-weight: 600; border-radius: 999px; padding: 1px 9px; }
   .state .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
   .state.idle { color: var(--green); background: var(--green-bg); }
@@ -266,7 +278,8 @@
 
 <div class="composer">
   <div class="inner">
-    <textarea id="input" placeholder="输入指令…（Enter 发送，Shift+Enter 换行）"></textarea>
+    <div id="palette" class="palette" hidden></div>
+    <textarea id="input" placeholder="输入指令…（/ 命令 · @ 文件 · Enter 发送，Shift+Enter 换行）"></textarea>
     <div class="row">
       <span id="cstate" class="state idle" title="agent 当前状态"><span class="dot"></span><span id="cstateText">空闲</span></span>
       <span class="hint">Enter 发送 · Shift+Enter 换行 · Ctrl+Enter 发送 · 空输入按 ↑ 召回上一条 · 忙时发送自动排队，转向并入当前运行</span>
@@ -784,13 +797,33 @@ $("btnSend").onclick = send.bind(null, "followUp");
 $("btnSteer").onclick = send.bind(null, "steer");
 async function send(whenBusy) {
   const input = $("input");
-  const content = input.value.trim();
+  let content = input.value.trim();
   if (!content) return;
+  const typed = content;
+  if (content.startsWith("/")) {
+    // 斜杠命令分发：host 命令直接执行；pi 自定义命令展开后发送；未知命令原样透传
+    const m = content.match(/^\/([A-Za-z0-9_-]+)(?:\s+([\s\S]*))?\s*$/);
+    if (m) {
+      const [, name, args] = m;
+      const host = HOST_COMMANDS.find((c) => c.name === name);
+      if (host) {
+        input.value = ""; input.style.height = "auto"; localStorage.removeItem(DRAFT_KEY); updateCount();
+        try { await host.exec(args ?? ""); } catch (err) { toast("命令失败：" + err.message); }
+        return;
+      }
+      const tpl = customCommands.find((c) => c.name === name);
+      if (tpl) {
+        const expandedText = substituteArgs(tpl.body, parseCommandArgs(args ?? "")).trim();
+        if (!expandedText) { toast(`命令模板为空：/${name}`); return; }
+        content = expandedText;
+      }
+    }
+  }
   $("btnSend").disabled = $("btnSteer").disabled = true;
   try {
     await api("/api/ask", { method: "POST", body: JSON.stringify({ content, whenBusy }) });
     input.value = ""; input.style.height = "auto";
-    lastSent = content; localStorage.removeItem(DRAFT_KEY); updateCount();
+    lastSent = typed; localStorage.removeItem(DRAFT_KEY); updateCount();
     followBottom = true; // 自己发言后视图跳到最新
     $("transcript").scrollTo({ top: $("transcript").scrollHeight, behavior: "smooth" });
   } catch (err) { toast("提交失败：" + err.message); }
@@ -871,6 +904,174 @@ let lastSent = "";
 function updateCount() { const n = inputEl.value.length; $("charCount").textContent = n ? n + " 字" : ""; }
 inputEl.value = localStorage.getItem(DRAFT_KEY) || "";
 inputEl.style.height = "auto"; inputEl.style.height = Math.min(160, inputEl.scrollHeight) + "px"; updateCount();
+
+// ---------- 快捷操作弹层：/ 命令面板 + @ 文件补全（issue #35） ----------
+// 自定义命令展开语义逐字复刻 pi（parseCommandArgs / substituteArgs，bundle chunk 源）；
+// pi-durable 会话层不做展开，host UI 端代劳，命令模板本身仍来自 pi 的 prompts 目录。
+let customCommands = [];
+let filesCache = { at: 0, files: [] };
+let composing = false;
+let pal = null; // { mode: "cmd"|"file", start, end, token, items, active }
+
+function parseCommandArgs(s) {
+  const args = []; let cur = "", q = null;
+  for (const ch of s) {
+    if (q) { if (ch === q) q = null; else cur += ch; }
+    else if (ch === '"' || ch === "'") q = ch;
+    else if (/\s/.test(ch)) { if (cur) { args.push(cur); cur = ""; } }
+    else cur += ch;
+  }
+  if (cur) args.push(cur);
+  return args;
+}
+function substituteArgs(content, args) {
+  const all = args.join(" ");
+  return content.replace(/\$\{(\d+|ARGUMENTS|@):-([^}]*)\}|\$\{@:(\d+)(?::(\d+))?\}|\$(ARGUMENTS|@|\d+)/g, (_m, defT, defV, slStart, slLen, simple) => {
+    if (defT) { const v = defT === "@" || defT === "ARGUMENTS" ? all : args[parseInt(defT, 10) - 1]; return v || defV; }
+    if (slStart) { let start = parseInt(slStart, 10) - 1; if (start < 0) start = 0; if (slLen) return args.slice(start, start + parseInt(slLen, 10)).join(" "); return args.slice(start).join(" "); }
+    if (simple === "ARGUMENTS" || simple === "@") return all;
+    return args[parseInt(simple, 10) - 1] ?? "";
+  });
+}
+async function loadCommands() {
+  try { customCommands = (await api("/api/commands")).commands ?? []; }
+  catch { customCommands = []; } // 旧 daemon 无此端点：仅影响自定义命令，host 命令不受影响
+}
+const HOST_COMMANDS = [
+  { name: "model", desc: "切换模型（打开顶部下拉）", exec: async () => {
+      const s = $("modelSel");
+      if (s.showPicker) { try { s.showPicker(); return; } catch {} }
+      s.focus(); toast("请从顶部模型下拉选择");
+    } },
+  { name: "cwd", desc: "修改会话工作目录", arg: "<path>", exec: async (a) => {
+      if (!a) { toast("用法：/cwd <path>"); return; }
+      await api("/api/config", { method: "POST", body: JSON.stringify({ cwd: a }) }); toast(`cwd 已切换：${a}`);
+    } },
+  { name: "instructions", desc: "设置会话指令", arg: "<text>", exec: async (a) => {
+      if (!a) { toast("用法：/instructions <text>"); return; }
+      await api("/api/config", { method: "POST", body: JSON.stringify({ instructions: a }) }); toast("instructions 已更新");
+    } },
+  { name: "session", desc: "切换或创建会话", arg: "<name>", exec: async (a) => {
+      const p = await api("/api/sessions");
+      if (!a) { toast(p.sessions.map((s) => s.name).join(" · ") || "（无会话）"); return; }
+      const exists = p.sessions.some((s) => s.name === a);
+      await api("/api/sessions", { method: "POST", body: JSON.stringify({ action: exists ? "switch" : "new", name: a }) });
+      expanded.clear(); hasRendered = false;
+      toast(exists ? `已切换到 ${a}` : `已创建并切换到 ${a}`);
+    } },
+  { name: "approve", desc: "批准待审批命令", arg: "[command]", exec: async (a) => {
+      if (a) { await api("/api/approve", { method: "POST", body: JSON.stringify({ command: a }) }); toast(`已批准：${a}`); return; }
+      const { pending } = await api("/api/approvals");
+      if (!pending?.length) { toast("没有待审批项"); return; }
+      for (const it of pending) await api("/api/approve", { method: "POST", body: JSON.stringify({ command: it.command }) });
+      toast(`已批准 ${pending.length} 项`);
+    } },
+  { name: "restart", desc: "热重启 daemon（运行中的 run 由后继进程 resume）", exec: async () => {
+      if (!confirm("热重启 daemon？运行中的 run 会由后继进程 resume 接续，SSE 自动重连。")) return;
+      $("conn").textContent = "重启中…";
+      try { await api("/api/restart", { method: "POST", body: "{}" }); } catch (err) { toast("重启请求失败：" + err.message); }
+    } },
+  { name: "help", desc: "再次打开命令面板", exec: async () => { inputEl.value = "/"; inputEl.dispatchEvent(new Event("input")); } },
+];
+const fuzzy = (q, s) => {
+  q = q.toLowerCase(); s = s.toLowerCase();
+  if (!q) return true;
+  let i = 0;
+  for (const ch of s) { if (ch === q[i]) i++; if (i >= q.length) return true; }
+  return false;
+};
+function paletteContext() {
+  const pos = inputEl.selectionStart ?? 0;
+  const before = inputEl.value.slice(0, pos);
+  const nl = before.indexOf("\n");
+  const line1 = nl === -1 ? before : before.slice(0, nl);
+  if (line1.startsWith("/") && !line1.slice(1).includes(" ")) return { mode: "cmd", start: 0, end: pos, token: line1.slice(1) };
+  const at = before.lastIndexOf("@");
+  if (at >= 0 && (at === 0 || /\s/.test(before[at - 1]))) {
+    const token = before.slice(at + 1);
+    if (!/\s/.test(token)) return { mode: "file", start: at, end: pos, token };
+  }
+  return null;
+}
+async function refreshPalette() {
+  const ctx = composing ? null : paletteContext();
+  if (!ctx) { closePalette(); return; }
+  if (!pal || pal.mode !== ctx.mode || pal.start !== ctx.start) pal = { ...ctx, items: [], active: 0 };
+  else Object.assign(pal, { end: ctx.end, token: ctx.token });
+  if (ctx.mode === "cmd") {
+    const entries = [
+      ...HOST_COMMANDS.map((c) => ({ kind: "host", cmd: c, name: c.name, title: "/" + c.name, desc: c.desc + (c.arg ? " " + c.arg : "") })),
+      ...customCommands.map((c) => ({ kind: "custom", name: c.name, title: "/" + c.name, desc: (c.description || "pi 自定义命令") + (c.argumentHint ? " " + c.argumentHint : "") })),
+    ].filter((c) => fuzzy(ctx.token, c.name));
+    entries.sort((a, b) => (a.name.startsWith(ctx.token) ? 0 : 1) - (b.name.startsWith(ctx.token) ? 0 : 1));
+    pal.items = entries.slice(0, 8);
+  } else {
+    if (!filesCache.at || Date.now() - filesCache.at > 30000) {
+      pal.items = [{ kind: "loading", title: "加载文件列表…", desc: "" }];
+      renderPalette();
+      try { filesCache = { at: Date.now(), files: (await api("/api/files")).files ?? [] }; } catch { filesCache = { at: Date.now(), files: [] }; }
+      if (!pal) return; // 异步期间已关闭
+    }
+    const hits = filesCache.files.filter((f) => fuzzy(ctx.token, f.path));
+    hits.sort((a, b) => {
+      const rank = (f) => { const base = f.path.split("/").pop().toLowerCase(); const t = ctx.token.toLowerCase(); return t && base.startsWith(t) ? 0 : base.includes(t) ? 1 : 2; };
+      return rank(a) - rank(b);
+    });
+    pal.items = hits.slice(0, 8).map((f) => ({ kind: "file", path: f.path, title: f.path, desc: "" }));
+  }
+  if (pal.active >= pal.items.length) pal.active = 0;
+  renderPalette();
+}
+function renderPalette() {
+  const el = $("palette");
+  if (!pal || !pal.items.length) { el.hidden = true; return; }
+  el.innerHTML = pal.items.map((it, i) => `<div class="pi-item${i === pal.active ? " active" : ""}" data-i="${i}"><span class="t">${esc(it.title)}</span>${it.desc ? `<span class="d">${esc(it.desc)}</span>` : ""}</div>`).join("");
+  el.hidden = false;
+  el.querySelector(".active")?.scrollIntoView({ block: "nearest" });
+}
+function closePalette() { pal = null; $("palette").hidden = true; }
+async function selectPaletteItem(it) {
+  if (!it || it.kind === "loading") return;
+  const { start, end } = pal ?? {};
+  closePalette();
+  if (it.kind === "file") {
+    inputEl.value = inputEl.value.slice(0, start) + "@" + it.path + " " + inputEl.value.slice(end);
+    const caret = start + it.path.length + 2;
+    inputEl.setSelectionRange(caret, caret);
+    inputEl.dispatchEvent(new Event("input"));
+    return;
+  }
+  if (it.kind === "host" && !it.cmd?.arg) {
+    inputEl.value = ""; inputEl.style.height = "auto"; localStorage.removeItem(DRAFT_KEY); updateCount();
+    try { await it.cmd.exec(""); } catch (err) { toast("命令失败：" + err.message); }
+    return;
+  }
+  const text = "/" + it.name + " ";
+  inputEl.value = inputEl.value.slice(0, start) + text + inputEl.value.slice(end);
+  const caret = start + text.length;
+  inputEl.setSelectionRange(caret, caret);
+  inputEl.dispatchEvent(new Event("input"));
+}
+inputEl.addEventListener("keydown", (ev) => {
+  if (!pal || pal.items.length === 0) return;
+  if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+    ev.preventDefault();
+    pal.active = (pal.active + (ev.key === "ArrowDown" ? 1 : pal.items.length - 1)) % pal.items.length;
+    renderPalette();
+  } else if (ev.key === "Enter" || ev.key === "Tab") {
+    ev.preventDefault(); ev.stopImmediatePropagation(); // 拦下 send 的 Enter
+    selectPaletteItem(pal.items[pal.active]);
+  } else if (ev.key === "Escape") { ev.preventDefault(); closePalette(); }
+});
+inputEl.addEventListener("compositionstart", () => { composing = true; closePalette(); });
+inputEl.addEventListener("compositionend", () => { composing = false; refreshPalette(); });
+const paletteEl = $("palette");
+paletteEl.addEventListener("mousedown", (ev) => ev.preventDefault()); // 保持输入框焦点
+paletteEl.addEventListener("click", (ev) => {
+  const item = ev.target.closest(".pi-item");
+  if (item && pal) selectPaletteItem(pal.items[Number(item.dataset.i)]);
+});
+
 inputEl.addEventListener("keydown", (ev) => {
   if (ev.key === "Enter" && (!ev.shiftKey || ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); send("followUp"); }
   else if (ev.key === "ArrowUp" && !inputEl.value && lastSent) { inputEl.value = lastSent; inputEl.dispatchEvent(new Event("input")); ev.preventDefault(); }
@@ -879,6 +1080,7 @@ inputEl.addEventListener("input", (ev) => {
   ev.target.style.height = "auto"; ev.target.style.height = Math.min(160, ev.target.scrollHeight) + "px";
   localStorage.setItem(DRAFT_KEY, ev.target.value);
   updateCount();
+  refreshPalette();
 });
 
 // ---------- 会话 / 模型 / 审批 / 备份 / 重启 ----------
@@ -898,6 +1100,7 @@ async function loadSessions() { try { renderSessions(await api("/api/sessions"))
 $("sessionSel").onchange = async () => {
   try { await api("/api/sessions", { method: "POST", body: JSON.stringify({ action: "switch", name: $("sessionSel").value }) }); expanded.clear(); hasRendered = false; }
   catch (err) { toast("切换失败：" + err.message); loadSessions(); }
+  filesCache = { at: 0, files: [] }; loadCommands(); // 会话 cwd 不同：项目级 pi 命令与文件列表都要重取
 };
 $("btnNewSession").onclick = async () => {
   const name = prompt("新会话名（字母/数字开头，可含 _ . -）：");
@@ -974,7 +1177,7 @@ $("approvalBody").addEventListener("click", async (ev) => {
   } catch (err) { toast(err.message); }
 });
 setInterval(refreshApprovals, 5000);
-refreshApprovals(); loadSessions(); loadModels();
+refreshApprovals(); loadSessions(); loadModels(); loadCommands();
 
 $("btnBackup").onclick = async () => {
   try { const { file } = await api("/api/backup", { method: "POST", body: "{}" }); toast("已备份：" + file); }
