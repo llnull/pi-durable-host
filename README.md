@@ -20,7 +20,7 @@ clone 到任意目录即可使用；运行时数据都在 `data/`（已 gitignor
 | `lib/lock.js` | 单写者锁（PID 存活检查，崩溃遗留的锁自动接管；`--takeover` 可等待前任退出） |
 | `lib/extensions.js` | 自建扩展：host-project-context / host-guard（拦截入待批清单）/ host-team（subagent） |
 | `lib/server.js` | 常驻 daemon：HTTP + SSE 实时视图 + REST API（含会话/审批/备份/热重启/工作区文件） |
-| `lib/ui.html` | Web UI（会话/模型切换、审批面板、实时视图、任务图、文件面板、专注模式） |
+| `lib/ui.html` | Web UI（会话/模型切换、审批面板、实时视图、任务图、文件面板、专注模式、composer 快捷操作） |
 | `lib/models.js` | 多主机模型层（完全复用 `~/.pi/agent` 的 models.json / auth.json / models-store.json / settings.json） |
 | `lib/sessions.js` | 命名会话 ↔ conversation 映射（`data/sessions.json`） |
 | `lib/approvals.js` | 批准清单 + 待批清单（guard / CLI / daemon / UI 共用） |
@@ -58,6 +58,11 @@ host 不维护自己的模型配置——直接复用 pi CLI 的 `~/.pi/agent/`�
 `PI_DURABLE_MODEL` 覆盖默认模型；`PI_DURABLE_KEY_<PROVIDER_ID>` 覆盖凭证（优先于 auth.json）；`PI_DURABLE_PI_DIR` 覆盖 pi agent 目录（默认 `~/.pi/agent`）。
 
 Web UI 的模型下拉会列出全部可用 provider（`models.json` 自定义 + `auth.json` 凭证，按 provider 分组、附模型说明），跨 provider 切换即时生效、无需重启；凭证或 api 实现不可用的 provider 自动隐藏。
+
+输入框支持快捷操作（类似 pi CLI）：
+
+- `/`：命令面板（↑↓/Enter/Esc 导航）——host 命令（`/model` `/cwd` `/instructions` `/session` `/approve` `/restart` `/help`）+ **pi 自定义命令**（`~/.pi/agent/prompts/*.md` 与 `<cwd>/.pi/prompts/*.md`，frontmatter 的 `description`/`argument-hint` 用于展示）；自定义命令由 UI 端按 pi 的参数语义（`$ARGUMENTS`/`$1`/`${n:-默认}`/`${@:start:len}`）展开后发送，模板本身与 pi CLI 同源共享
+- `@`：模糊补全会话工作区文件（`@相对路径` 以文本插入，模型用 read 工具自取内容）
 
 自定义中继示例（`~/.pi/agent/models.json`）：
 
@@ -139,7 +144,7 @@ node host.js serve [端口=7600] [--host 127.0.0.1] [--takeover]
 #   POST /api/backup   { file? }
 #   POST /api/restart  热重启（见上）
 #   GET  /api/state | /api/events(SSE) | /api/history | /api/status | /api/tasks | /api/usage
-#   GET  /api/models | /api/sessions | /api/approvals | /api/files | /api/submission?id= | /api/entry?id=
+#   GET  /api/models | /api/sessions | /api/approvals | /api/files | /api/commands | /api/submission?id= | /api/entry?id=
 #   GET  /files/<path>  工作区静态文件（MIME 自适应、路径穿越防护；设置 PI_DURABLE_TOKEN 时同样受鉴权保护）
 
 # CLI（daemon 运行时自动转发到 daemon；未运行时本地直连存储）
