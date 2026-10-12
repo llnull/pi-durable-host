@@ -1,80 +1,44 @@
 # Pi Durable Host
 
-`@earendil-works/pi-durable`（实验性，API 随版本变动）的本地 host：
+[`@earendil-works/pi-durable`](https://github.com/llnull/pi-durable)（实验性，API 随版本变动）的本地 host：把持久化 agent 会话跑在 SQLite（WAL）上，提供 **Web UI / CLI / REST API** 三种入口。进程崩溃可恢复，改代码后热重启零数据损失。
 
-- 持久化会话跑在 SQLite（WAL）上，进程崩溃可恢复
-- 模型后端多主机自适应：本机 pi 配置（openai-completions）或 Ark relay（anthropic-messages），同一份代码无需修改
-- 工具为 CodingTools（read / write / edit / bash），外加 host 自建扩展：项目上下文 / 危险命令守卫（审批流）/ 子代理
-- 常驻 daemon：Web UI（会话/模型切换、实时视图、审批、任务图、文件浏览）+ REST API + 热重启
+## 快速开始
 
-clone 到任意目录即可使用；运行时数据都在 `data/`（已 gitignore，不入库）。
+```bash
+npm install                       # 安装 pi-durable / pi-ai / chord
+node host.js serve                # 常驻 daemon（默认 http://127.0.0.1:7600）
+node host.js ask "列出本目录结构"   # 或者直接 CLI 提问
+```
 
-> 提示：仓库放在 Windows 盘再挂进 WSL（drvfs）时，SQLite WAL 可用但性能低于 ext4；
-> 重负载场景建议用 `PI_DURABLE_DATA_DIR` 把数据目录指到 ext4 文件系统。
+浏览器打开 <http://localhost:7600/> 即得完整 UI。运行时数据都在 `data/`（已 gitignore）；
+模型配置**直接复用本机 pi CLI 的** `~/.pi/agent/`，无需在 host 里再配一遍。
 
-## 目录结构
+## 特性一览
 
-| 路径 | 说明 |
-|---|---|
-| `host.js` | host CLI（ask / history / wait / status / tasks / sessions / approve / backup / timing / restart / serve / config） |
-| `lib/lock.js` | 单写者锁（PID 存活检查，崩溃遗留的锁自动接管；`--takeover` 可等待前任退出） |
-| `lib/extensions.js` | 自建扩展：host-project-context / host-guard（拦截入待批清单）/ host-team（subagent） |
-| `lib/server.js` | 常驻 daemon：HTTP + SSE 实时视图 + REST API（含会话/审批/备份/热重启/工作区文件） |
-| `lib/ui.html` | Web UI（会话/模型切换、审批面板、实时视图、任务图、文件面板、专注模式、composer 快捷操作） |
-| `lib/models.js` | 多主机模型层（完全复用 `~/.pi/agent` 的 models.json / auth.json / models-store.json / settings.json） |
-| `lib/sessions.js` | 命名会话 ↔ conversation 映射（`data/sessions.json`） |
-| `lib/approvals.js` | 批准清单 + 待批清单（guard / CLI / daemon / UI 共用） |
-| `lib/backup.js` | `VACUUM INTO` 一致性快照（daemon 内多连接安全，无需暂停 run） |
-| `lib/daemon.js` | serve.json 发现 + CLI→daemon HTTP 转发 |
-| `lib/format.js` | CLI 输出格式化（本地直连与 daemon 转发共用，两种路径输出一致） |
-| `data/session.sqlite` | 持久化存储（WAL，进程崩溃可恢复；运行时生成） |
-| `data/host.lock` | 单写者锁文件（存活期间持有，退出自动释放） |
-| `data/serve.json` | daemon 运行信息（pid/port/host；CLI 据此转发） |
-| `data/approvals*.json` | 批准清单 / 待批清单（`approve` 命令或 UI 维护，guard 每次调用实时读取） |
-| `data/tool-timing.log` | 工具调用耗时日志（host-guard 的计时 wrap 追加；`timing` 命令汇总） |
-| `data/backups/` | `backup` 快照（默认保留最新 20 份） |
-| `workspace/` | agent 工具的默认 cwd（bash/write/edit 在此工作；不入库） |
+- **持久会话**：SQLite（WAL）存储，崩溃后 `resume()` 接续未完成的 run（包括生成中的回答）
+- **多会话**：命名会话 ↔ conversation 映射，UI/CLI 随时切换
+- **模型**：完全复用 pi 配置（自定义中继 + 凭证），UI 内跨 provider 即时切换
+- **分叉重试**：从任意提问分叉出新会话换说法重问，原会话不变
+- **上下文调试**：查看任意条目处模型实际看到的 context
+- **危险命令审批**：guard 拦截 + 待批清单 + 一键批准
+- **可观测**：实时任务图、工具耗时、用量（按模型分 tokens 与金额）
+- **运维**：`VACUUM INTO` 在线备份、热重启、日志轮转、大响应 gzip
 
-## 依赖
+## 配置
 
-- Node >= 22.19（node:sqlite 有 ExperimentalWarning，可忽略）
-- `npm install` 安装 `@earendil-works/pi-durable` + `@earendil-works/pi-ai` + `@earendil-works/chord`
-- 可选 `PI_DURABLE_TOKEN` —— daemon API 鉴权令牌（绑定非回环地址时强烈建议设置；Web UI / `/api/*` / `/files/*` 全部受保护）
-- 可选 `PI_DURABLE_HOST` —— serve 默认监听地址（默认 `127.0.0.1`）
-- 可选 `PI_DURABLE_DATA_DIR` —— 覆盖数据目录（默认 `<repo>/data`；测试/多实例用）
+### 模型后端（完全复用 pi 配置）
 
-## 模型后端（完全复用 pi 配置）
-
-host 不维护自己的模型配置——直接复用 pi CLI 的 `~/.pi/agent/`，各机器自行配置，同一份代码无需修改：
+host 不维护自己的模型配置——直接读 pi CLI 的 `~/.pi/agent/`，各机器自行配置，同一份代码跨机器无需修改：
 
 | 文件 | 作用 |
 |---|---|
-| `models.json` | 自定义 provider（中继/自建端点）：`baseUrl` + `api`（如 `anthropic-messages`）+ 模型目录；`apiKey` 支持 `$VAR`/`${VAR}` 环境变量引用（密钥不落盘） |
-| `auth.json` | pi `/login` 存储的 api-key 凭证 |
-| `models-store.json` | pi 维护的模型目录缓存（`pi update --models`） |
-| `settings.json` | `defaultProvider` / `defaultModel` |
+| `~/.pi/agent/models.json` | 自定义 provider（中继/自建端点）：`baseUrl` + `api` + 模型目录；`apiKey` 支持 `$VAR` 环境引用（密钥不落盘） |
+| `~/.pi/agent/auth.json` | pi `/login` 存储的 api-key 凭证 |
+| `~/.pi/agent/models-store.json` | pi 维护的模型目录缓存（`pi update --models`） |
+| `~/.pi/agent/settings.json` | `defaultProvider` / `defaultModel` |
 
 选型顺序：`PI_DURABLE_PROVIDER=<id>` 显式指定 → `settings.json` 的 `defaultProvider` → `models.json` 自定义 provider → `auth.json` 凭证 provider。
-`PI_DURABLE_MODEL` 覆盖默认模型；`PI_DURABLE_KEY_<PROVIDER_ID>` 覆盖凭证（优先于 auth.json）；`PI_DURABLE_PI_DIR` 覆盖 pi agent 目录（默认 `~/.pi/agent`）。
-
-Web UI 的模型下拉会列出全部可用 provider（`models.json` 自定义 + `auth.json` 凭证，按 provider 分组、附模型说明），跨 provider 切换即时生效、无需重启；凭证或 api 实现不可用的 provider 自动隐藏。
-
-输入框支持快捷操作（类似 pi CLI）：
-
-- `/`：命令面板（↑↓/Enter/Esc 导航）——host 命令（`/model` `/cwd` `/instructions` `/session` `/approve` `/restart` `/help`）+ **pi 自定义命令**（`~/.pi/agent/prompts/*.md` 与 `<cwd>/.pi/prompts/*.md`，frontmatter 的 `description`/`argument-hint` 用于展示）；自定义命令由 UI 端按 pi 的参数语义（`$ARGUMENTS`/`$1`/`${n:-默认}`/`${@:start:len}`）展开后发送，模板本身与 pi CLI 同源共享
-- `@`：模糊补全会话工作区文件（`@相对路径` 以文本插入，模型用 read 工具自取内容）
-- 悬停用户消息 → **⑂ 分叉**：从该提问分叉出新会话（`Conversation.fork`，上下文与 agent 配置复制到该处、provider 身份全新），新会话里换个说法重问即「从此重试」，原会话不变
-- 配置变更（模型/工作目录/指令）自动写入 `host.config` 审计条目：只进 transcript 账本（回放可见），**不进模型 context**（自定义 kind 无 model 字段，天然零贡献）
-- run 头部悬停 → **⚿ 上下文**：查看该提问处模型实际看到的 context（`Conversation.context(at)`，fork 起点同源），调试 steer/压缩边界/上下文漂移
-
-### 自动化集成
-
-备份/外部脚本在动作前等待会话空闲（重启用 resume，无需此步；这是给**外部进程**的一致性保证）：
-
-```bash
-# 等待最多 60s；idle=false 时自行决定跳过或重试
-curl -s -X POST http://127.0.0.1:7600/api/wait-idle -d '{"timeoutMs":60000}'
-```
+`PI_DURABLE_MODEL` 覆盖默认模型；`PI_DURABLE_KEY_<PROVIDER_ID>` 覆盖凭证（优先于 auth.json）；`PI_DURABLE_PI_DIR` 覆盖 pi agent 目录。
 
 自定义中继示例（`~/.pi/agent/models.json`）：
 
@@ -94,116 +58,185 @@ curl -s -X POST http://127.0.0.1:7600/api/wait-idle -d '{"timeoutMs":60000}'
 }
 ```
 
-- host-guard 的磁盘类拦截同时覆盖 Linux（/dev/sd*、nvme、vd）与 macOS（/dev/disk*、/dev/rdisk*、diskutil 抹除/卸载/缩容）
+> 中继不公布价格时模型目录 `cost` 为 0，UI 用量面板显示 tokens 但不显示金额——不编造数据。
 
-## 单写者模型（重要）
+### 环境变量
 
-pi-durable 存储无跨进程锁：**一个存储同一时刻只能被一个进程打开**。
-host.js 的每个存储命令都会持有 `data/host.lock`（记录 PID）直到退出；锁的持有者还活着时其他进程
-拒绝启动，持有者已死时自动接管。**推荐姿势：跑一个 `serve` 常驻进程作为唯一持有者**，
-其余一切（人、脚本、UI、host.js 自身）通过它的 HTTP 接口使用：serve 运行期间，
-CLI 命令（ask / history / status / tasks / sessions / approve / config / backup / restart / wait）
-检测到 daemon 后**自动转发**，不再被锁拒绝。
+| 变量 | 说明 |
+|---|---|
+| `PI_DURABLE_TOKEN` | daemon API 鉴权令牌（绑定非回环地址时**强烈建议**；UI / `/api/*` / `/files/*` 全受保护） |
+| `PI_DURABLE_HOST` | serve 默认监听地址（默认 `127.0.0.1`） |
+| `PI_DURABLE_DATA_DIR` | 数据目录（默认 `<repo>/data`；测试/多实例用） |
+| `PI_DURABLE_PROVIDER` / `PI_DURABLE_MODEL` / `PI_DURABLE_KEY_*` / `PI_DURABLE_PI_DIR` | 见上 |
 
-## 命名会话
-
-每个会话名对应一个独立持久 conversation（`data/sessions.json`）；`default` 即 root conversation（id 1），
-历史数据无缝兼容。daemon 的 UI/API/SSE 全部跟随"当前会话"，切换即时生效；
-`ask --session <name>` 可以直接对非当前会话提问。`sessions new|switch|delete` 管理映射
-（delete 只解除映射，conversation 数据保留在存储中）。
-
-## 忙时输入语义（whenBusy）
-
-会话正在生成时发新消息，行为由 `POST /api/ask` 的 `whenBusy` 决定（无独立 /api/steer 端点；
-UI 输入区在忙时自动出现「排队/转向」选择）。这是 pi-durable 的内建语义，host 未加配置项：
-
-| whenBusy | 行为 | 典型用途 |
-|---|---|---|
-| `followUp`（默认） | **排队**：生成结束后作为新输入依次执行 | 连续下达多条独立指令 |
-| `steer` | **转向**：插入当前运行的下一轮，模型在本次生成内看到它 | 纠偏（"别用 rm，用 mv"）、补充约束 |
-| `reject` | 忙时直接拒绝（HTTP 409） | 自动化脚本要求互斥时 |
-
-排队与转向的消息都进入 transcript 的 `pi.inbox`（侧栏 inbox 面板可见，标注模式）；
-转向消息还会出现在当前 run 分组内（标「转向」标签）。队列不落模型 context 之外的持久状态，
-重启后由 submission 索引恢复。
-
-## 危险命令审批（host-guard）
-
-guard 拦截危险 bash 命令时，命令进入 `data/approvals-pending.json` 待批清单：
-
-- **Web UI**：侧栏「审批」面板一键「批准 / 忽略」，已批准项可「撤销」（5s 轮询刷新）
-- **CLI**：`node host.js approve -- <命令>`（批准并清待批）/ `--list` / `--revoke n`
-- 批准/撤销对运行中的 daemon 实时生效（guard 每次调用重读文件）；批准后让 agent 重试原命令即可
-- 允许前缀通配：批准 `git push origin*` 会放行所有以它开头的命令
-
-## 备份与热重启
-
-- `node host.js backup` / `POST /api/backup`：daemon 在自己进程内开第二个 SQLite 连接执行
-  `VACUUM INTO`，拿到与 WAL 一致的快照，不暂停任何 run；默认存 `data/backups/`，保留最新 20 份
-- `node host.js restart` / `POST /api/restart`：**热重启**。daemon 先派生 detached 后继进程
-  （`serve --takeover`，最长等锁 60s），再优雅关闭存储退出；后继接管锁后 `resume()` 接续所有
-  未完成的 run（包括正在生成的回答）。Web UI 的 SSE 会自动重连。典型用途：改完 host 代码后零数据损失升级
-- 踩坑记录：daemon 停止时，运行中的工具调用会被执行环境 `killProcessTree` 按**进程组** SIGKILL——
-  从工具里 nohup 出来的后台脚本会一起被杀（nohup 只免 SIGHUP，不换进程组；且 macOS 无 setsid）。
-  需要跨 daemon 存活的工作必须独立会话（如 `node -e spawn(...,{detached:true})`），
-  或干脆走 `/api/restart`（后继由 daemon 自身派生，天然不在工具进程树里）
-- 三保险（issue #25 / #28）：① 工具子进程携带 `PI_DURABLE_HOSTED_BY` + `PI_DURABLE_CONV` 环境标记，
-  CLI `restart` 在 hosted 环境内一律拒绝（重放循环）；CLI `ask` 在 hosted 环境内默认拒绝
-  （followUp 等待被自己占用的会话 → 环等死锁），仅显式 `--session` 指向旁路会话时放行；
-  （工具调用被打断后会被 pi-durable 重放，重放的 restart 会再杀一次后继 daemon，形成循环）；
-  ② `/api/restart` 15s 防抖窗口（`data/restart.marker`，跨世代生效、过期自愈）
-- `node host.js timing [n]`：tool-timing.log 汇总（每工具 n / avg / p50 / p95 / max）+ 最近 n 条
-
-## 用法
-
-```bash
-# 常驻 daemon（推荐）：Web UI + SSE 实时视图 + REST API
-node host.js serve [端口=7600] [--host 127.0.0.1] [--takeover]
-#   UI:        http://localhost:7600/
-#   POST /api/ask      { content, whenBusy?: "followUp"|"steer"|"reject", wait?: bool, requestId?, session? }
-#                      （忙时排队/转向都走 ask 的 whenBusy，无独立 /api/steer）
-#   POST /api/abort    中止当前运行（后台任务不受影响）
-#   POST /api/compact  { instructions? }
-#   POST /api/reset    { note? }
-#   POST /api/config   { cwd? / instructions? / model? }   ← UI 模型切换器也走这里
-#   POST /api/sessions { action: new|switch|delete, name }
-#   POST /api/fork     { entryId, name? }  从历史条目分叉新会话（Conversation.fork）并切换；
-#                                          UI 里悬停用户消息 → ⑂ 按钮触发
-#   GET  /api/context  ?entryId=n        调试视图：该条目处的模型上下文（Conversation.context(at)，
-#                                          即 fork(at) 会看到的起点）；host.js context <entryId> 同源
-#   POST /api/wait-idle { timeoutMs?, session? }  等待会话空闲（无活跃非后台任务），超时返回 { idle: false }；
-#                                          外部自动化（备份/脚本）在动作前调用以保证一致性
-#   POST /api/approve  { command } | /api/approve/revoke { index } | /api/approvals/dismiss { command }
-#   POST /api/backup   { file? }
-#   POST /api/restart  热重启（见上）
-#   GET  /api/state | /api/events(SSE) | /api/history | /api/status | /api/tasks | /api/usage
-#   GET  /api/models | /api/sessions | /api/approvals | /api/files | /api/commands | /api/submission?id= | /api/entry?id=
-#   GET  /files/<path>  工作区静态文件（MIME 自适应、路径穿越防护；设置 PI_DURABLE_TOKEN 时同样受鉴权保护）
-
-# CLI（daemon 运行时自动转发到 daemon；未运行时本地直连存储）
-node host.js ask "..." [--fresh] [--session s]  # 提交 prompt，等 run 结束，打印回答
-                                  # 同内容重复 ask 幂等复用（requestId=内容哈希）；--fresh 强制新提交
-node host.js history [n] [--session s]          # 打印最近 n 条 transcript（默认 50）
-node host.js wait [秒]            # 有未完成的 run（如上个进程被杀）时等它走完；开机/部署后先跑一次
-node host.js status               # 会话状态：busy / 生成重试 / 工具 / 压缩 / inbox / agent / 用量 / 活任务
-node host.js tasks                # 实时任务图（所有权、等待关系、后台标记）
-node host.js sessions [new|switch|delete <name>]  # 命名会话管理（default=root conversation）
-node host.js approve -- <命令>    # 批准危险命令（--list 查看 / --revoke n 撤销）；实时生效
-node host.js backup [文件]        # VACUUM INTO 一致性快照
-node host.js timing [n]           # 工具耗时汇总
-node host.js restart              # 热重启 daemon（后继进程 resume 所有 run）
-node host.js config               # 把存储的 agent cwd/model 重置为本目录当前值
-```
+依赖：Node >= 22.19（`node:sqlite` 的 ExperimentalWarning 可忽略）。
 
 ## Web UI（http://localhost:7600/）
 
-- 顶栏：会话下拉（切换/新建/删除）、模型下拉（即改即生效，来自本机模型目录）、备份、热重启
-- 工具栏：对话搜索/过滤（全部 / 含工具调用 / 转向）、展开/收起一体按钮（按状态动态显示将要执行的动作）、跳到最新、**专注模式**（收起侧栏、收窄为阅读列宽）
-- 主区：按 run 分组的对话流（内容壳宽屏分档自适应 1200/1440/1600），工具调用卡片配对渲染，markdown/表格/代码块渲染，流式生成实时显示
-- 输入区：卡片式 composer（聚焦高亮、运行状态胶囊、字数统计、草稿自动保存、Ctrl/⌘+Enter 发送、↑ 召回上一条、忙时「排队/转向」）
-- 侧栏：实时运行、排队 inbox、**审批面板（待批一键批准/撤销）**、用量、任务图、文件面板；每个面板点标题折叠/展开（状态记忆在 localStorage，折叠的审批/排队面板显示计数徽标）
-- 文件：回答中的工作区文件路径自动链接，`GET /files/<path>` 直接打开
-- SSE 断线自动重连（daemon 重启后视图无缝恢复）
+- **顶栏**：会话下拉（切换/新建/删除）、模型下拉（即改即生效）、备份、热重启、任务图/文件/压缩/重置入口
+- **对话流**：按 run 分组；工具调用卡片 call/result 配对渲染；markdown/表格/代码块；流式生成实时显示
+- **分叉（⑂）**：悬停任意一条用户提问 → 气泡旁 **⑂** 按钮 → 确认后从该条目分叉出新会话并切换
+  （`Conversation.fork`：上下文与 agent 配置复制到该处、provider 身份全新）。新会话里换个说法重问即「从此重试」，
+  原会话不变。触屏设备按钮常显
+- **上下文调试（⚿）**：悬停 run 头部 → **⚿** 按钮 → 弹层显示该提问处模型实际看到的 context
+  （`Conversation.context(at)`，与 `fork(at)` 起点同源）。调试 steer 之后、压缩边界、上下文漂移
+- **composer**：`/` 命令面板（host 命令 + `~/.pi/agent/prompts/*.md` 自定义命令，参数语义与 pi CLI 同源）；
+  `@` 文件补全；↑ 召回上一条；草稿自动保存；忙时「排队/转向」选择
+- **侧栏**：实时运行、排队 inbox、审批面板（待批一键批准/撤销）、用量（按模型分行 + 费率可得时显示金额）、
+  任务图、工作区文件。每个面板**点标题折叠/展开**（localStorage 记忆；折叠的审批/排队面板显示计数徽标）
+- **专注模式**：收起侧栏、收窄为阅读列宽
+- SSE 断线自动重连（daemon 热重启后视图无缝恢复）
+
+## CLI
+
+daemon 运行时自动转发到 daemon（单写者锁不冲突）；未运行时本地直连存储：
+
+```bash
+node host.js serve [端口=7600] [--host h] [--takeover]  # 常驻 daemon（推荐姿势）
+node host.js ask "..." [--fresh] [--session s]   # 提交并等 run 结束；同内容幂等复用，--fresh 强制新提交
+node host.js history [n] [--session s]           # 最近 n 条 transcript
+node host.js context <entryId> [--session s]     # 该条目处的模型上下文摘要（与 UI ⚿ 同源）
+node host.js wait [秒]                           # 等未完成 run 走完；开机/部署后先跑一次
+node host.js status                              # busy / 生成重试 / 工具 / 压缩 / inbox / agent / 用量 / 活任务
+node host.js tasks                               # 实时任务图（所有权、等待关系、后台标记）
+node host.js sessions [new|switch|delete <name>] # 命名会话管理
+node host.js approve -- <命令> [--list|--revoke n] # 批准危险命令（实时生效）
+node host.js backup [文件]                       # VACUUM INTO 一致性快照
+node host.js timing [n]                          # 工具耗时汇总（n/avg/p50/p95/max）
+node host.js restart                             # 热重启（后继进程 resume 所有 run）
+node host.js config                              # 重置存储的 cwd/model 为本目录当前值
+```
+
+## HTTP API
+
+鉴权：设置 `PI_DURABLE_TOKEN` 后所有端点需 `Authorization: Bearer <token>`（SSE 用 `?token=`）。
+
+| 端点 | 说明 |
+|---|---|
+| `POST /api/ask` | `{ content, whenBusy?: "followUp"\|"steer"\|"reject", wait?, requestId?, session? }`；忙时排队/转向都走这里 |
+| `POST /api/abort` | 中止当前运行（后台任务不受影响） |
+| `POST /api/compact` | `{ instructions? }` 提交压缩任务 |
+| `POST /api/reset` | `{ note? }` 重置上下文 |
+| `POST /api/config` | `{ cwd? / instructions? / model? }`（变更自动写入 `host.config` 审计条目） |
+| `POST /api/sessions` | `{ action: new\|switch\|delete, name }` |
+| `POST /api/fork` | `{ entryId, name? }` 从历史条目分叉新会话并切换 |
+| `POST /api/wait-idle` | `{ timeoutMs?, session? }` 等会话空闲（外部自动化动作前的一致性保证）；超时 `{ idle: false }` |
+| `POST /api/approve` / `/api/approve/revoke` / `/api/approvals/dismiss` | 审批管理 |
+| `POST /api/backup` / `POST /api/restart` | 在线备份 / 热重启 |
+| `GET /api/state[?light=1]` | 全量快照（light 仅元数据，1.2KB 级）；`GET /api/events` SSE 增量推送 |
+| `GET /api/history` / `/api/entry?id=` / `/api/submission?id=` | transcript 与提交记录 |
+| `GET /api/context?entryId=n` | 该条目处的模型上下文（消息摘要，防倾倒） |
+| `GET /api/status` / `/api/tasks` / `/api/usage` / `/api/models` / `/api/sessions` / `/api/approvals` / `/api/files` / `/api/commands` | 状态类只读端点 |
+| `GET /files/<path>` | 工作区静态文件（路径穿越防护） |
+
+## 核心语义
+
+### 命名会话
+
+每个会话名对应一个独立持久 conversation（`data/sessions.json`）；`default` 即 root conversation（id 1），
+历史数据无缝兼容。daemon 的 UI/API/SSE 全部跟随「当前会话」，切换即时生效；
+`ask --session <name>` 可直接对非当前会话提问（delete 只解除映射，conversation 数据保留）。
+
+### 忙时输入（whenBusy）
+
+会话生成中收到新消息时（pi-durable 内建语义，host 未加配置项）：
+
+| whenBusy | 行为 | 典型用途 |
+|---|---|---|
+| `followUp`（默认） | **排队**：生成结束后依次执行 | 连续下达多条独立指令 |
+| `steer` | **转向**：插入当前运行的下一轮 | 纠偏（"别用 rm，用 mv"）、补充约束 |
+| `reject` | 忙时直接拒绝（HTTP 409） | 自动化要求互斥 |
+
+排队与转向都进 transcript 的 `pi.inbox`（侧栏可见）；转向消息还出现在当前 run 分组内（标「转向」）。
+
+### 危险命令审批（host-guard）
+
+bash 命令命中危险模式（`sudo`、`rm -r/-f`、`mkfs`、`dd of=/dev/*`、fork 炸弹、强制推送、磁盘抹除等）时被拦截：
+命令进 `data/approvals-pending.json` 待批清单，agent 收到含 escape hatch 的提示。批准途径：
+
+- Web UI 审批面板一键「批准 / 忽略」（待批数以徽标显示在面板标题）
+- CLI：`node host.js approve -- <命令>`（`--list` / `--revoke n`）
+- 允许前缀通配：批准 `git push origin*` 放行所有以它开头的命令
+
+批准/撤销对运行中的 daemon 实时生效（guard 每次调用重读文件）；批准后让 agent 重试原命令即可。
+
+### 单写者模型（重要）
+
+pi-durable 存储无跨进程锁：**一个存储同一时刻只能被一个进程打开**。host.js 每个存储命令都持有
+`data/host.lock`（记录 PID），持有者存活时其他进程拒绝启动，已死时自动接管（`--takeover` 可等待接管）。
+**推荐姿势：跑一个 `serve` 常驻进程作为唯一持有者**，其余一切（人、脚本、UI、CLI）走它的 HTTP 接口——
+serve 运行期间 CLI 命令自动转发，不再被锁拒绝。
+
+## 运维
+
+### 备份
+
+`node host.js backup` / `POST /api/backup`：daemon 在自己进程内开第二个 SQLite 连接执行 `VACUUM INTO`，
+拿到与 WAL 一致的快照，**不暂停任何 run**。默认存 `data/backups/`，保留最新 20 份。
+
+### 热重启
+
+`node host.js restart` / `POST /api/restart`：daemon 先派生 detached 后继进程（`serve --takeover`，
+最长等锁 60s），再优雅关闭退出；后继接管锁后 `resume()` 接续所有未完成的 run。Web UI 的 SSE 自动重连。
+典型用途：改完 host 代码后零数据损失升级。
+
+**踩坑记录**：daemon 停止时运行中的工具调用会被 `killProcessTree` 按进程组 SIGKILL——从工具里 nohup
+出来的后台脚本会一起被杀（nohup 只免 SIGHUP 不换进程组；macOS 无 setsid）。需要跨 daemon 存活的工作
+必须独立会话 detached spawn，或走 `/api/restart`（后继由 daemon 自身派生，不在工具进程树里）。
+
+**防护（issue #25 / #28）**：① 工具子进程携带 `PI_DURABLE_HOSTED_BY` 标记，hosted 环境内 CLI `restart`
+一律拒绝（重放循环）、`ask` 默认拒绝（followUp 环等死锁），仅 `--session` 旁路会话放行；
+② `/api/restart` 15s 防抖窗口（`data/restart.marker`，跨世代生效、过期自愈）。
+
+### 工具耗时
+
+`node host.js timing [n]`：`data/tool-timing.log` 汇总（每工具 n/avg/p50/p95/max）+ 最近 n 条。
+
+## 目录结构
+
+源码：
+
+| 路径 | 说明 |
+|---|---|
+| `host.js` | CLI 入口（ask/history/context/wait/status/tasks/sessions/approve/backup/timing/restart/serve/config） |
+| `lib/server.js` | 常驻 daemon：HTTP + SSE 增量推送 + REST API |
+| `lib/ui.html` | Web UI（单文件，无构建步骤） |
+| `lib/models.js` | 模型层（复用 `~/.pi/agent` 配置） |
+| `lib/extensions.js` | 自建扩展：项目上下文 / host-guard（审批流）/ host-team（subagent） |
+| `lib/sessions.js` | 命名会话映射 |
+| `lib/approvals.js` | 批准/待批清单（guard / CLI / daemon / UI 共用） |
+| `lib/backup.js` | VACUUM INTO 快照 |
+| `lib/lock.js` | 单写者锁（PID 存活检查） |
+| `lib/daemon.js` | serve.json 发现 + CLI→daemon 转发 |
+| `lib/format.js` | CLI 输出格式化（本地直连与 daemon 转发输出一致） |
+| `test/` | node:test 单测（guard 纯函数等） |
+
+运行时数据（`data/`，不入库）：
+
+| 路径 | 说明 |
+|---|---|
+| `session.sqlite` | 持久化存储（WAL） |
+| `host.lock` | 单写者锁 |
+| `serve.json` | daemon 运行信息（pid/port/host） |
+| `sessions.json` | 会话名 ↔ conversation 映射 |
+| `approvals*.json` | 批准清单 / 待批清单 |
+| `tool-timing.log` | 工具耗时日志（1MB 轮转） |
+| `serve.log` | daemon 日志（1MB 轮转） |
+| `backups/` | 备份快照 |
+| `workspace/` | agent 工具的默认 cwd |
+
+## 设计原则
+
+- **复用而非重造**：模型配置完全复用 pi CLI；fork/压缩/steer 语义全部走 pi-durable 库 API，host 只做注册与展示
+- **不编造数据**：费率未知就不显示金额；重试/压缩状态如实呈现
+- **账本与 context 分离**：审计用自定义 entry（`host.config`），只进 transcript 不进模型 context
+- **可恢复优先**：一切状态入 SQLite，重启靠 resume 而非约定 UI 状态
+
+## 已知限制
+
+- pi-durable 是实验性库，API 随版本变动（本仓库锁定依赖版本）
+- 仓库放 Windows 盘挂进 WSL（drvfs）时 SQLite WAL 性能低于 ext4；重负载建议 `PI_DURABLE_DATA_DIR` 指向 ext4
+- 单写者锁意味着同一数据目录不能同时跑两个 daemon（多实例用不同 `PI_DURABLE_DATA_DIR`）
 
 ## 部署节奏（改代码后）
 
