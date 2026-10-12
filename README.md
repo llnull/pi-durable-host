@@ -15,6 +15,8 @@ node host.js ask "列出本目录结构"   # 或者直接 CLI 提问
 浏览器打开 <http://localhost:7600/> 即得完整 UI。运行时数据都在 `data/`（已 gitignore）；
 模型配置**直接复用本机 pi CLI 的** `~/.pi/agent/`，无需在 host 里再配一遍。
 
+![Web UI 预览](docs/ui-preview.png)
+
 ## 特性一览
 
 - **持久会话**：SQLite（WAL）存储，崩溃后 `resume()` 接续未完成的 run（包括生成中的回答）
