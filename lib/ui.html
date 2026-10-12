@@ -109,6 +109,16 @@
   .fork-btn { visibility: hidden; align-self: flex-end; margin: 0 6px 2px; border: none; background: none; color: var(--faint); font-size: 13px; cursor: pointer; padding: 2px 4px; border-radius: 6px; }
   .msg.user:hover .fork-btn { visibility: visible; }
   .fork-btn:hover { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+  .ctx-btn { border: none; background: none; cursor: pointer; color: var(--faint); font-size: 12px; padding: 2px 5px; border-radius: 4px; opacity: 0; transition: opacity .12s; }
+  .run-head:hover .ctx-btn { opacity: 1; }
+  .ctx-btn:hover { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+  .modal-mask { position: fixed; inset: 0; background: rgba(15,20,30,.45); display: flex; align-items: center; justify-content: center; z-index: 60; }
+  .modal { background: var(--bg); border: 1px solid var(--line); border-radius: 10px; max-width: 720px; width: 92%; max-height: 80vh; display: flex; flex-direction: column; box-shadow: 0 12px 40px rgba(0,0,0,.25); }
+  .modal-head { display: flex; justify-content: space-between; align-items: center; padding: 10px 16px; border-bottom: 1px solid var(--line); font-weight: 600; }
+  .modal-body { overflow: auto; padding: 12px 16px; font-size: 12.5px; }
+  .modal-body .m-role { color: var(--accent); font-weight: 600; margin: 10px 0 2px; }
+  .modal-body .m-block { white-space: pre-wrap; word-break: break-word; color: var(--fg); background: #f7f8fb; border-radius: 6px; padding: 6px 8px; margin: 2px 0; }
+  .modal-body .m-meta { color: var(--faint); font-style: italic; }
   .audit-line { text-align: center; color: var(--faint); font-size: 11.5px; margin: 4px 0; }
   .msg.agent .bubble { background: #f4f5fa; border: 1px solid var(--line); border-bottom-left-radius: 4px; }
   .msg.stream .bubble { border-style: dashed; }
@@ -301,6 +311,12 @@
   </div>
 </div>
 <div id="toast" class="toast"></div>
+<div id="ctxModal" class="modal-mask" style="display:none">
+  <div class="modal">
+    <div class="modal-head"><span id="ctxTitle">上下文</span><button class="ctx-btn" id="ctxClose" style="opacity:1;font-size:16px">✕</button></div>
+    <div class="modal-body" id="ctxBody"></div>
+  </div>
+</div>
 
 <script>
 "use strict";
@@ -590,6 +606,7 @@ function runHeadHtml(g, runNo, isOpen, busy) {
       <span class="run-tag ${g.steer ? "steer" : "new"}">${g.steer ? "转向" : "新输入"}</span>
       <span class="run-preview">${preview}</span>
       <span class="run-stats">${stats}</span>
+      <button class="ctx-btn" data-ctx="${String(g.firstId)}" title="查看此处模型上下文（调试）">⚿</button>
       <span class="run-caret">${isOpen ? "▾" : "▸"}</span>
     </div>`;
 }
@@ -769,6 +786,10 @@ function render(view) {
 }
 
 // ---------- 交互 ----------
+// ⚿ 上下文弹层关闭（点遮罩或 ✕）
+$("ctxClose").onclick = () => { $("ctxModal").style.display = "none"; };
+$("ctxModal").addEventListener("click", (ev) => { if (ev.target === $("ctxModal")) $("ctxModal").style.display = "none"; });
+
 $("transcript").addEventListener("click", async (ev) => {
   const forkBtn = ev.target.closest(".fork-btn");
   if (forkBtn) {
@@ -778,6 +799,26 @@ $("transcript").addEventListener("click", async (ev) => {
       expanded.clear(); hasRendered = false;
       toast(`已分叉并切换到 ${r.session}`);
     } catch (err) { toast("分叉失败：" + err.message); }
+    return;
+  }
+  const ctxBtn = ev.target.closest(".ctx-btn");
+  if (ctxBtn) {
+    ev.stopPropagation(); // 不触发 run 折叠
+    try {
+      const r = await api(`/api/context?entryId=${encodeURIComponent(ctxBtn.dataset.ctx)}`);
+      $("ctxTitle").textContent = `模型上下文 @ 条目 ${r.entryId}（${r.messages.length} 条消息）`;
+      $("ctxBody").innerHTML = r.messages.map((m) => {
+        const blocks = m.preview.map((b) => {
+          if (b.type === "text") return `<div class="m-block">${esc(b.text)}</div>`;
+          if (b.type === "thinking") return `<div class="m-block m-meta">⟪thinking ${b.text.length}B⟫</div>`;
+          if (b.type === "toolCall") return `<div class="m-block m-meta">⚙ ${esc(b.name)}(参数 ${b.argsLength}B)</div>`;
+          if (b.type === "toolResult") return `<div class="m-block m-meta">⏎ ${b.isError ? "错误" : "结果"} ${b.length}B</div>`;
+          return `<div class="m-block m-meta">${esc(b.type)}</div>`;
+        }).join("");
+        return `<div class="m-role">${esc(m.role)}</div>${blocks}`;
+      }).join("") || '<div class="muted">（空上下文）</div>';
+      $("ctxModal").style.display = "flex";
+    } catch (err) { toast("上下文读取失败：" + err.message); }
     return;
   }
   const head = ev.target.closest(".run-head");

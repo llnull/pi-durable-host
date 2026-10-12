@@ -279,6 +279,30 @@ async function cmdAsk(args) {
 	}
 }
 
+async function cmdContext(args) {
+	const { session, rest } = sessionFlag(args);
+	const entryId = Number.parseInt(rest[0] ?? "", 10);
+	if (!Number.isFinite(entryId)) throw new Error("用法：node host.js context <entryId> [--session s]（entryId 见 history）");
+	const daemon = requireDaemonOrThrow("context");
+	if (daemon) {
+		const data = await daemonApi(daemon, "GET", `/api/context?entryId=${entryId}${session ? `&session=${encodeURIComponent(session)}` : ""}`);
+		console.log(`context @ entry ${data.entryId}（conversation ${data.conversationId}）：${data.messages.length} 条消息，覆盖 ${data.entries.length} 个条目`);
+		for (const m of data.messages) {
+			const head = m.preview.map((b) => {
+				if (b.type === "text") return b.text.slice(0, 120).replace(/\s+/g, " ");
+				if (b.type === "thinking") return `⟪thinking ${b.text.length}B⟫`;
+				if (b.type === "toolCall") return `⚙${b.name}(${b.argsLength}B)`;
+				if (b.type === "toolResult") return `⏎${b.isError ? "err" : "ok"} ${b.length}B`;
+				return b.type;
+			}).join(" | ");
+			console.log(`  [${m.role}] ${head}`);
+		}
+		return;
+	}
+	// 非 daemon 路径不单独实现——直接提示走 daemon 或 UI
+	throw new Error("context 调试视图需要 daemon（node host.js serve）；UI 的 ⚿ 按钮亦可");
+}
+
 async function cmdHistory(args) {
 	const { session, rest } = sessionFlag(args);
 	const limit = Number.parseInt(rest[0] ?? "50", 10) || 50;
@@ -706,6 +730,7 @@ const [command, ...rest] = process.argv.slice(2);
 const commands = {
 	ask: () => cmdAsk(rest),
 	history: () => cmdHistory(rest),
+	context: () => cmdContext(rest),
 	wait: () => cmdWait(Number(rest[0] ?? 600) * 1000),
 	config: () => cmdConfig(),
 	status: () => cmdStatus(rest),
@@ -721,7 +746,7 @@ if (!command || !commands[command]) {
 	console.error(
 		"usage: node host.js ask <prompt> [--fresh] [--session s] | history [n] | wait [s] | status | tasks |\n" +
 			"       sessions [new|switch|delete <name>] | approve -- <cmd> | approve --list | approve --revoke <n> |\n" +
-			"       backup [file] | timing [n] | restart | serve [port] [--host h] [--takeover] | config",
+			"       context <entryId> [--session s] | backup [file] | timing [n] | restart | serve [port] [--host h] [--takeover] | config",
 	);
 	process.exitCode = 2;
 } else {
