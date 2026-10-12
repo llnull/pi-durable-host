@@ -64,6 +64,7 @@ Web UI 的模型下拉会列出全部可用 provider（`models.json` 自定义 +
 - `/`：命令面板（↑↓/Enter/Esc 导航）——host 命令（`/model` `/cwd` `/instructions` `/session` `/approve` `/restart` `/help`）+ **pi 自定义命令**（`~/.pi/agent/prompts/*.md` 与 `<cwd>/.pi/prompts/*.md`，frontmatter 的 `description`/`argument-hint` 用于展示）；自定义命令由 UI 端按 pi 的参数语义（`$ARGUMENTS`/`$1`/`${n:-默认}`/`${@:start:len}`）展开后发送，模板本身与 pi CLI 同源共享
 - `@`：模糊补全会话工作区文件（`@相对路径` 以文本插入，模型用 read 工具自取内容）
 - 悬停用户消息 → **⑂ 分叉**：从该提问分叉出新会话（`Conversation.fork`，上下文与 agent 配置复制到该处、provider 身份全新），新会话里换个说法重问即「从此重试」，原会话不变
+- 配置变更（模型/工作目录/指令）自动写入 `host.config` 审计条目：只进 transcript 账本（回放可见），**不进模型 context**（自定义 kind 无 model 字段，天然零贡献）
 
 自定义中继示例（`~/.pi/agent/models.json`）：
 
