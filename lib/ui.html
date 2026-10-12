@@ -109,6 +109,7 @@
   .fork-btn { visibility: hidden; align-self: flex-end; margin: 0 6px 2px; border: none; background: none; color: var(--faint); font-size: 13px; cursor: pointer; padding: 2px 4px; border-radius: 6px; }
   .msg.user:hover .fork-btn { visibility: visible; }
   .fork-btn:hover { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+  .audit-line { text-align: center; color: var(--faint); font-size: 11.5px; margin: 4px 0; }
   .msg.agent .bubble { background: #f4f5fa; border: 1px solid var(--line); border-bottom-left-radius: 4px; }
   .msg.stream .bubble { border-style: dashed; }
   .bubble .e-body + .e-body, .bubble details + .e-body, .e-body + details { margin-top: 6px; }
@@ -490,6 +491,11 @@ function toolCardHtml(call, resultEntry, liveTool) {
 
 // ---------- 条目渲染（run 展开后）----------
 function entryHtml(e, resultIndex, liveToolByCall) {
+  if (e.kind === "host.config") {
+    const label = { model: "模型", cwd: "工作目录", instructions: "指令" }[e.data?.field] ?? e.data?.field;
+    const fmt = (v) => (v === undefined || v === "" ? "（未设置）" : typeof v === "string" && v.length > 60 ? v.slice(0, 60) + "…" : String(v));
+    return `<div class="audit-line">⚙ ${esc(label ?? "配置")}：${esc(fmt(e.data?.from))} → <b>${esc(fmt(e.data?.to))}</b></div>`;
+  }
   if (e.kind === "pi.user") {
     return `<div class="msg user"><div class="bubble">${linkifyFiles(esc(textBlocks(e.model?.[0]?.content)))}</div><button class="fork-btn" data-fork="${esc(e.id)}" title="从此提问分叉新会话（上下文复制到此处，可换指令重试）">⑂</button></div>`;
   }
