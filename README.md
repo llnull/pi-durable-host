@@ -17,13 +17,6 @@ node host.js ask "列出本目录结构"   # 或者直接 CLI 提问
 
 ![Web UI 演示](docs/ui-demo.gif)
 
-<details>
-<summary>静态截图</summary>
-
-![Web UI 演示：提问 → 流式生成 → 完成](docs/ui-preview.gif)
-
-</details>
-
 ## 特性一览
 
 - **持久会话**：SQLite（WAL）存储，崩溃后 `resume()` 接续未完成的 run（包括生成中的回答）
