@@ -117,3 +117,22 @@ test("硬表优先于灰表：kill -9 -1 仍为 block", () => {
 test("批准后灰表也放行", () => {
 	assert.equal(judgeCommand("git push origin main", true), undefined);
 });
+
+// ---------- flag 模式不再写待批清单（issue #106） ----------
+
+test("flag 模式：命令放行且不产生待批（避免无意义审批历史）", async () => {
+	const { buildGuard } = await import("../lib/extensions.js");
+	const { mkdtempSync, readFileSync, existsSync } = await import("node:fs");
+	const { tmpdir } = await import("node:os");
+	const { join } = await import("node:path");
+	const dir = mkdtempSync(join(tmpdir(), "pidh-guard-"));
+	const approvalsFile = join(dir, "approvals.json");
+	const pendingFile = join(dir, "approvals-pending.json");
+	for (const mode of ["flag", "block"]) {
+		const guard = buildGuard({ approvalsFile, mode, judge: { noul: async () => ({ p: 0.5 }), provider: "stub" } });
+		await guard.hooks[0].handlers.beforeTool({ name: "bash", arguments: { command: "rm -rf /tmp/whatever" } });
+	}
+	const pending = existsSync(pendingFile) ? readFileSync(pendingFile, "utf8") : "{}";
+	const items = JSON.parse(pending).items ?? [];
+	assert.equal(items.length, 1, "只有 block 模式命中进待批，flag 模式不进");
+});
