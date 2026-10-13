@@ -34,6 +34,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { acquireLock, releaseLock } from "./lib/lock.js";
 import { buildGuard, buildProjectContext, SubagentExtension } from "./lib/extensions.js";
+import { createJudge } from "./lib/judge.js";
 import { openModelLayer } from "./lib/models.js";
 import { startServer } from "./lib/server.js";
 import { detectDaemon, daemonApi } from "./lib/daemon.js";
@@ -49,6 +50,7 @@ const DATA_FILE = path.join(DATA_DIR, "session.sqlite");
 const LOCK_FILE = path.join(DATA_DIR, "host.lock");
 const APPROVALS_FILE = path.join(DATA_DIR, "approvals.json");
 const TIMING_LOG = path.join(DATA_DIR, "tool-timing.log");
+const JUDGE_LOG = path.join(DATA_DIR, "judge-log.jsonl");
 const SERVE_LOG = path.join(DATA_DIR, "serve.log");
 const WORKSPACE = path.join(HERE, "workspace");
 
@@ -67,7 +69,14 @@ function buildRegistry() {
 	const registry = createRegistry();
 	registry.install(CodingTools);
 	registry.install(buildProjectContext()); // injects workspace AGENTS.md when present
-	registry.install(buildGuard({ approvalsFile: APPROVALS_FILE, timingLog: TIMING_LOG }));
+	const JUDGE = createJudge({
+	url: process.env.PI_DURABLE_JUDGE_URL || undefined,
+	key: process.env.PI_DURABLE_JUDGE_KEY || undefined,
+	model: process.env.PI_DURABLE_JUDGE_MODEL || "jev-latest",
+	log: JUDGE_LOG,
+});
+
+registry.install(buildGuard({ approvalsFile: APPROVALS_FILE, timingLog: TIMING_LOG, judge: JUDGE }));
 	registry.install(SubagentExtension); // provides the `subagent` tool
 	return registry;
 }
