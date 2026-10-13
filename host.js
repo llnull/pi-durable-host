@@ -99,7 +99,7 @@ function buildRegistry() {
 	const registry = createRegistry();
 	registry.install(CodingTools);
 	registry.install(buildProjectContext()); // injects workspace AGENTS.md when present
-	registry.install(buildGuard({ approvalsFile: APPROVALS_FILE, timingLog: TIMING_LOG, judge: JUDGE }));
+	registry.install(buildGuard({ approvalsFile: APPROVALS_FILE, timingLog: TIMING_LOG, judge: JUDGE, mode: envOr("PI_DURABLE_GUARD", "guard") ?? "block" }));
 	if (SCREEN) {
 		const hostScreen = buildScreen({
 			judge: JUDGE, mode: SCREEN_MODE,
