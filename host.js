@@ -63,6 +63,8 @@ function readHostConfig() {
 }
 const HOST_CONFIG = readHostConfig();
 const envOr = (key, fileKey) => process.env[key] ?? (HOST_CONFIG.judge?.[fileKey] ?? undefined);
+// 通用版（任意段）：guard 等非 judge 配置用这个——早期 envOr 写死 judge 段导致 guard.mode 读不到（issue #100）
+const cfgOr = (envKey, section, fileKey) => process.env[envKey] ?? HOST_CONFIG[section]?.[fileKey] ?? undefined;
 
 // Judge 子系统（issue #70）：模块级单例，buildRegistry（guard）与 serve（忙时路由/run 体检）共用。
 const JUDGE = createJudge({
@@ -99,7 +101,7 @@ function buildRegistry() {
 	const registry = createRegistry();
 	registry.install(CodingTools);
 	registry.install(buildProjectContext()); // injects workspace AGENTS.md when present
-	registry.install(buildGuard({ approvalsFile: APPROVALS_FILE, timingLog: TIMING_LOG, judge: JUDGE, mode: envOr("PI_DURABLE_GUARD", "guard") ?? "block" }));
+	registry.install(buildGuard({ approvalsFile: APPROVALS_FILE, timingLog: TIMING_LOG, judge: JUDGE, mode: cfgOr("PI_DURABLE_GUARD", "guard", "mode") ?? "block" }));
 	if (SCREEN) {
 		const hostScreen = buildScreen({
 			judge: JUDGE, mode: SCREEN_MODE,
