@@ -38,10 +38,11 @@ test("安全命令放行", () => {
 	for (const cmd of [
 		"ls -la",
 		"rm -i file.txt", // 交互删除不拦
-		"git push origin main",
+		// git push origin main 归灰表（置信路由），见下“灰表命中”
+		"git push --dry-run",
 		"chmod 644 file",
 		"curl https://example.com -o out.json",
-		"kill -9 12345",
+		// kill -9 12345 定点杀进程归灰表（置信路由）；杀系统级 kill -9 -1 仍在硬表
 		"df -h",
 		"echo 'rm -rf'", // 引号内文本不命中（正则不解析 shell 语法）——已知保守边界，保持不变
 	]) {
@@ -82,4 +83,37 @@ test("边界：空白与空串", () => {
 	assert.equal(matchesApproval("", "x"), false);
 	assert.equal(matchesApproval("*", "x"), true);
 	assert.equal(matchesApproval("git push", "  git push  "), true, "命令两端空白被裁剪");
+});
+
+// ---------- 灰色地带表 + 置信路由（issue #70 落点 2） ----------
+
+test("灰表命中：外部副作用/系统变更类", () => {
+	const cases = [
+		["git push origin main", "推送到远端（外部副作用）"],
+		["npm install -g typescript", "全局安装包"],
+		["pip install requests", "安装 Python 包"],
+		["brew install ripgrep", "Homebrew 变更"],
+		["defaults write com.apple.x y", "系统配置变更"],
+		["chmod -R 644 dir", "递归改权限/属主"],
+		["kill 1234", "进程终止"],
+	];
+	for (const [cmd, why] of cases) {
+		const hit = judgeCommand(cmd);
+		assert.equal(hit?.why, why, cmd);
+		assert.equal(hit?.severity, "gray", cmd);
+	}
+});
+
+test("灰表不误伤日常命令", () => {
+	for (const cmd of ["ls -la", "git status", "git push --dry-run", "echo hi > f.txt", "npm install", "node test/guard.test.js"]) {
+		assert.equal(judgeCommand(cmd), undefined, cmd);
+	}
+});
+
+test("硬表优先于灰表：kill -9 -1 仍为 block", () => {
+	assert.equal(judgeCommand("kill -9 -1")?.severity, "block");
+});
+
+test("批准后灰表也放行", () => {
+	assert.equal(judgeCommand("git push origin main", true), undefined);
 });
