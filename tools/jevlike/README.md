@@ -22,9 +22,18 @@
 
 ## 部署
 
-Python 要求 ≥3.10（torch CPU 轮子最高支持 3.13；macOS 系统 Python 3.9 / homebrew 3.14 都不行）。
-本机验证过的 uv 最短路径：`brew install uv` + `uv venv ~/.venvs/jevlike --python 3.12`，
-再把下面两条 pip 命令换成 `uv pip install --python ~/.venvs/jevlike/bin/python …`。
+Python 要求 **≥3.10**（torch CPU 轮子目前最高支持 3.13）。先看 `python3 --version`：
+
+- **3.10–3.13**：直接用系统 python3，走下面 pip 路径（大多数 Linux 发行版在此区间）
+- **其他**（太老如 macOS 自带 3.9，或太新无 torch 轮子）：用 [uv](https://docs.astral.sh/uv/) 拉一个 3.12 最省事：
+
+```sh
+# uv 安装（任选其一；macOS 也可 brew install uv）
+curl -LsSf https://astral.sh/uv/install.sh | sh
+# 建 venv 后，把下文的 ~/.venvs/jevlike/bin/pip 换成：
+#   uv pip install --python ~/.venvs/jevlike/bin/python …
+uv venv ~/.venvs/jevlike --python 3.12
+```
 
 ```sh
 # 1) venv（一次性；~200MB torch CPU）
@@ -84,7 +93,7 @@ cd ~/jevlike-lab && ~/.venvs/jevlike/bin/python server.py --port 7610 \
 （若 venv 也丢了：`python3 -m venv ~/.venvs/jevlike` + 重跑部署第 1 步，pip cache 命中即秒装。）
 
 注意 `--ckpt` 是 `前缀=路径` 且前缀须与训练 state 开头对齐（`command:` / `content:` / `output:`），
-写成域名（routing=/guard=）会静默全部走 fallback；Apple Silicon 上训练自动用 MPS。
+写成域名（routing=/guard=）会静默全部走 fallback；Apple Silicon 上训练自动用 MPS，其余平台 CPU。
 
 ## 限制
 
