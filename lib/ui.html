@@ -255,6 +255,10 @@
   #filesBody .kv { margin: 3px 0; }
   /* 侧栏动态内容面板限高，超出部分内部滚动，避免把其它面板挤到页尾 */
   #liveBody, #inboxBody, #filesBody { max-height: 38vh; overflow-y: auto; }
+  #judgeBody { max-height: 30vh; overflow-y: auto; }
+  .judge-badge { font-size: 11px; font-weight: 700; border-radius: 5px; padding: 0 6px; white-space: nowrap; }
+  .judge-badge.warn { color: var(--amber); background: var(--amber-bg); cursor: help; }
+  .judge-badge.ok { color: #0b7a3e; background: #e6f6ec; cursor: help; }
 </style>
 </head>
 <body>
@@ -300,6 +304,9 @@
     </div>
     <div class="panel" id="usagePanel">
       <h3>用量与会话</h3><div id="usageBody" class="muted">…</div>
+    </div>
+    <div class="panel" id="judgePanel" style="display:none">
+      <h3>体检（judge）</h3><div id="judgeBody" class="muted">…</div>
     </div>
     <div class="panel" id="tasksPanel" style="display:none">
       <h3>任务图</h3><div id="tasksBody"></div>
@@ -629,10 +636,22 @@ function runHeadHtml(g, runNo, isOpen, busy) {
     ? `<b>${esc(promptText)}</b> → ${esc(answerText.length > 70 ? answerText.slice(0, 70) + "…" : answerText)}`
     : `<b>${esc(promptText)}</b>${busy ? " <span class='muted'>（进行中…）</span>" : ""}`;
   const stats = [`${g.turns} 轮响应`, g.tools ? `${g.tools} 次工具` : null, g.time].filter(Boolean).join(" · ");
+  // run 体检徽标（issue #70）：异常 ⚠ + flags 提示；健康 ✓。fork 建议：异常 run 引导分叉重试
+  const cu = judgeCheckups.get(String(g.firstId));
+  let judgeBadge = "";
+  if (cu) {
+    if (cu.flags?.length) {
+      const detail = `${cu.flags.join("、")}（工具 ${cu.tools ?? 0} 次/错 ${cu.toolErrors ?? 0}）`;
+      judgeBadge = `<span class="judge-badge warn" title="run 体检：${esc(detail)}。可悬停本轮首条提问用 ⑂ 分叉重试">⚠ ${esc(cu.flags[0].split(":")[0])}${cu.flags.length > 1 ? "+" + (cu.flags.length - 1) : ""}</span>`;
+    } else if (cu.health != null) {
+      judgeBadge = `<span class="judge-badge ok" title="run 体检：健康分 ${cu.health}${cu.healthProvider ? "（" + esc(cu.healthProvider) + "）" : ""}">✓</span>`;
+    }
+  }
   return `<div class="run-head" data-first="${String(g.firstId)}">
       <span class="run-no">#${runNo}</span>
       <span class="run-tag ${g.steer ? "steer" : "new"}">${g.steer ? "转向" : "新输入"}</span>
       <span class="run-preview">${preview}</span>
+      ${judgeBadge}
       <span class="run-stats">${stats}</span>
       <button class="ctx-btn" data-ctx="${String(g.firstId)}" title="查看此处模型上下文（调试）">⚿</button>
       <span class="run-caret">${isOpen ? "▾" : "▸"}</span>
@@ -725,7 +744,8 @@ function render(view) {
       const key = String(g.firstId);
       desiredOrder.push(key);
       const isOpen = q ? true : expanded.has(key);
-      const sig = [runNo, g.entries.length, g.turns, g.tools, g.answer ? 1 : 0, isOpen ? 1 : 0, isLast && busy ? 1 : 0].join(":");
+      const cu = judgeCheckups.get(key);
+      const sig = [runNo, g.entries.length, g.turns, g.tools, g.answer ? 1 : 0, isOpen ? 1 : 0, isLast && busy ? 1 : 0, cu ? cu.flags?.length + ":" + (cu.at ?? "") : ""].join(":");
       let rec = runEls.get(key);
       if (!rec) {
         const el = document.createElement("div");
@@ -819,6 +839,23 @@ function render(view) {
     `<div class="kv">输入 <b>${sum.input.toLocaleString()}</b> · 输出 <b>${sum.output.toLocaleString()}</b> · 缓存读 <b>${sum.cacheRead.toLocaleString()}</b> tokens${cost.known ? ` · <b>$${cost.total.toFixed(4)}</b>` : ""}</div>` +
     modelRows +
     `<div class="kv">会话 ID <b>${esc(view.conversation?.id ?? "?")}</b> · 条目 <b>${entries.length}</b> · 对话轮次 <b>${groups.filter((g) => g.type === "run").length}</b></div>`;
+
+  // 侧栏：judge 体检（issue #70）——最近 8 条 + 异常徽标
+  const jp = $("judgePanel");
+  const cus = [...judgeCheckups.values()].sort((a, b) => (b.at ?? "").localeCompare(a.at ?? ""));
+  const bad = cus.filter((c) => c.flags?.length).length;
+  if (cus.length) {
+    jp.style.display = "";
+    $("judgeBody").innerHTML =
+      `<div class="kv">最近 <b>${cus.length}</b> 次 · 异常 <b style="color:${bad ? "var(--amber)" : "inherit"}">${bad}</b></div>` +
+      cus.slice(0, 8).map((c) => {
+        const mark = c.flags?.length ? "⚠" : "✓";
+        const what = c.flags?.length ? esc(c.flags.join("、")) : `健康分 ${c.health ?? "?"}${c.healthProvider ? "（" + esc(c.healthProvider) + "）" : ""}`;
+        const t = c.at ? new Date(c.at).toLocaleTimeString() : "";
+        return `<div class="kv">${mark} <b>#${esc(String(c.runFirstId))}</b> · ${esc(what)} · ${esc(t)}（工具 ${c.tools ?? 0}/错 ${c.toolErrors ?? 0}）</div>`;
+      }).join("");
+    setPanelBadge("judgePanel", bad);
+  } else jp.style.display = "none";
 }
 
 // ---------- 交互 ----------
@@ -1363,6 +1400,17 @@ document.addEventListener("visibilitychange", () => {
 // ---------- 连接（SSE v2：view 快照 + entries/live/docs 增量帧，见 issue #27） ----------
 const UI_PROTO = 2; // 与 lib/server.js 的 SERVER_PROTO 对应
 let uiView = null;
+const judgeCheckups = new Map(); // runFirstId → 体检记录（SSE 'judge' 事件 + 初始拉取，issue #70）
+
+/** 初始拉取体检记录（页面加载/刷新后也能看到历史徽标） */
+(async () => {
+  try {
+    const { items } = await api("/api/judge/checkups");
+    for (const c of items ?? []) judgeCheckups.set(String(c.runFirstId), c);
+    if (items?.length) scheduleRender(uiView);
+  } catch {}
+})();
+
 function applyEvent(name, data) {
   try {
     if (name === "view") {
@@ -1373,6 +1421,12 @@ function applyEvent(name, data) {
     else if (name === "entries") {
       const list = uiView.entries ?? (uiView.entries = []);
       for (const e of data.entries ?? []) if (!list.length || list[list.length - 1].id !== e.id) list.push(e);
+    } else if (name === "judge") {
+      // run 体检结果（issue #70）：挂在对应 run 分组上
+      if (data?.runFirstId != null) {
+        judgeCheckups.set(String(data.runFirstId), data);
+        if (data.flags?.length) toast(`⚠ run 体检异常：${data.flags.join("、")}`);
+      }
     } else if (name === "live") {
       uiView.docs = { ...(uiView.docs ?? {}), "pi.live": data.live };
     } else if (name === "docs") {
@@ -1389,7 +1443,7 @@ function applyEvent(name, data) {
 function connect() {
   const es = new EventSource("/api/events");
   es.addEventListener("session", (ev) => { renderSessions(JSON.parse(ev.data)); });
-  for (const name of ["view", "entries", "live", "docs"]) es.addEventListener(name, (ev) => applyEvent(name, JSON.parse(ev.data)));
+  for (const name of ["view", "entries", "live", "docs", "judge"]) es.addEventListener(name, (ev) => applyEvent(name, JSON.parse(ev.data)));
   es.onerror = () => { $("conn").textContent = "重连中…"; };
 }
 connect();

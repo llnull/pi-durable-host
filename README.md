@@ -27,6 +27,7 @@ node host.js ask "列出本目录结构"   # 或者直接 CLI 提问
 - **分叉重试**：从任意提问分叉出新会话换说法重问，原会话不变
 - **上下文调试**：查看任意条目处模型实际看到的 context
 - **危险命令审批**：guard 拦截 + 待批清单 + 一键批准
+- **judge 体检**：Jev-like 类型化判断接入控制面——每个 run 结束自动体检（工具错误/空回答/连败）+ 全量审计日志，异常 run 徽标提示可分叉重试
 - **可观测**：实时任务图、工具耗时、用量（按模型分 tokens 与金额）
 - **运维**：`VACUUM INTO` 在线备份、热重启、日志轮转、大响应 gzip
 
@@ -74,6 +75,8 @@ host 不维护自己的模型配置——直接读 pi CLI 的 `~/.pi/agent/`，�
 | `PI_DURABLE_HOST` | serve 默认监听地址（默认 `127.0.0.1`） |
 | `PI_DURABLE_DATA_DIR` | 数据目录（默认 `<repo>/data`；测试/多实例用） |
 | `PI_DURABLE_PROVIDER` / `PI_DURABLE_MODEL` / `PI_DURABLE_KEY_*` / `PI_DURABLE_PI_DIR` | 见上 |
+| `PI_DURABLE_JUDGE_URL` / `PI_DURABLE_JUDGE_KEY` / `PI_DURABLE_JUDGE_MODEL` | Jev/system-one 兼容判断端点（不设则用内置 heuristic 规则判断）；端点失败自动降级，安全功能永不禁用 |
+| `PI_DURABLE_JUDGE_ROUTING` | 设为 `auto` 启用忙时 judge 自动路由（未显式指定 whenBusy 时分类纠偏/排队） |
 
 依赖：Node >= 22.19（`node:sqlite` 的 ExperimentalWarning 可忽略）。
 
@@ -132,6 +135,7 @@ node host.js config                              # 重置存储的 cwd/model 为
 | `GET /api/state[?light=1]` | 全量快照（light 仅元数据，1.2KB 级）；`GET /api/events` SSE 增量推送 |
 | `GET /api/history` / `/api/entry?id=` / `/api/submission?id=` | transcript 与提交记录 |
 | `GET /api/context?entryId=n` | 该条目处的模型上下文（消息摘要，防倾倒） |
+| `GET /api/judge/log` / `GET /api/judge/checkups` | judge 判断审计尾览 / run 体检记录 |
 | `GET /api/status` / `/api/tasks` / `/api/usage` / `/api/models` / `/api/sessions` / `/api/approvals` / `/api/files` / `/api/commands` | 状态类只读端点 |
 | `GET /files/<path>` | 工作区静态文件（路径穿越防护） |
 
@@ -165,6 +169,15 @@ bash 命令命中危险模式（`sudo`、`rm -r/-f`、`mkfs`、`dd of=/dev/*`、
 - 允许前缀通配：批准 `git push origin*` 放行所有以它开头的命令
 
 批准/撤销对运行中的 daemon 实时生效（guard 每次调用重读文件）；批准后让 agent 重试原命令即可。
+
+### judge 体检（Jev-like 判断）
+
+host 控制面集成了 System One（Jev-like，2026-09，分析报告见仓库 `workspace/2026-09-jev-system-one-analysis.html`）风格的三原语类型化判断：Noul（真伪概率）/ Choice（选项+分布）/ Score（rubric 定级）。原则：原子问题代码组合、置信路由（高置信自动/低置信转人工）、破坏性操作永远人工、判断不进对话上下文（不污染 fork/CTX 语义）。
+
+- **run 体检**：每次 run 结束自动统计工具错误/空回答/连败，judge 打健康分；异常 run 在对话流显示 ⚠ 徽标（悬停看详情，引导用 ⑂ 分叉重试），侧栏「体检」面板可回溯
+- **guard 叠加**：放行的命令也审计（`data/judge-log.jsonl`）；配真 Jev 端点后补语义判断
+- **忙时自动路由**（opt-in）：`PI_DURABLE_JUDGE_ROUTING=auto` 时未显式指定 whenBusy → judge 分类纠偏/排队，永不自动拒绝
+- **provider**：默认内置 heuristic 规则判断（无概率语义，规则外如实返回 null）；设 `PI_DURABLE_JUDGE_URL` 指向 Jev/jevlike 兼容端点即换语义判断，失败自动降级
 
 ### 单写者模型（重要）
 
