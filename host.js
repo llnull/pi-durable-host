@@ -52,19 +52,31 @@ const APPROVALS_FILE = path.join(DATA_DIR, "approvals.json");
 const TIMING_LOG = path.join(DATA_DIR, "tool-timing.log");
 const JUDGE_LOG = path.join(DATA_DIR, "judge-log.jsonl");
 
+/**
+ * 宿主级持久配置 data/host.json（可选）：judge 等。
+ * 环境变量优先于文件（一次性覆盖用），文件优先于默认——这样 /api/restart（继承旧 env）
+ * 也能切 judge 配置，不依赖外部 shell 环境重建。文件不存在/坏 JSON → 空对象，不阻塞启动。
+ */
+function readHostConfig() {
+	try { return JSON.parse(readFileSync(path.join(DATA_DIR, "host.json"), "utf8")); }
+	catch { return {}; }
+}
+const HOST_CONFIG = readHostConfig();
+const envOr = (key, fileKey) => process.env[key] ?? (HOST_CONFIG.judge?.[fileKey] ?? undefined);
+
 // Judge 子系统（issue #70）：模块级单例，buildRegistry（guard）与 serve（忙时路由/run 体检）共用。
 const JUDGE = createJudge({
-	url: process.env.PI_DURABLE_JUDGE_URL || undefined,
-	key: process.env.PI_DURABLE_JUDGE_KEY || undefined,
-	model: process.env.PI_DURABLE_JUDGE_MODEL || "jev-latest",
+	url: envOr("PI_DURABLE_JUDGE_URL", "url"),
+	key: envOr("PI_DURABLE_JUDGE_KEY", "key"),
+	model: envOr("PI_DURABLE_JUDGE_MODEL", "model") ?? "jev-latest",
 	log: JUDGE_LOG,
 });
 const SERVE_LOG = path.join(DATA_DIR, "serve.log");
 const WORKSPACE = path.join(HERE, "workspace");
 
 // 工具结果护栏（issue #78）：flag（默认）| block | off。heuristic provider 下自动不安装。
-const SCREEN_MODE = /^(block|off)$/i.test(process.env.PI_DURABLE_JUDGE_SCREEN ?? "")
-	? process.env.PI_DURABLE_JUDGE_SCREEN.toLowerCase()
+const SCREEN_MODE = /^(block|off)$/i.test(envOr("PI_DURABLE_JUDGE_SCREEN", "screen") ?? "")
+	? envOr("PI_DURABLE_JUDGE_SCREEN", "screen").toLowerCase()
 	: "flag";
 const SCREEN_RING = []; // 最近 50 条护栏命中（host 侧持有，server 只读）
 const SCREEN_SINK = {}; // server 启动后注入 broadcast，host 侧 onFlag 经此发 SSE
@@ -748,6 +760,7 @@ async function cmdServe(args) {
 			defaultAgent: DEFAULT_AGENT,
 			judge: JUDGE,
 			screen: SCREEN,
+			routingAuto: envOr("PI_DURABLE_JUDGE_ROUTING", "routing") === "auto",
 		});
 	} catch (err) {
 		console.error("[serve] 启动失败:", err.message);
