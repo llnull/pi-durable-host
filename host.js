@@ -33,7 +33,7 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { acquireLock, releaseLock } from "./lib/lock.js";
-import { buildGuard, buildProjectContext, SubagentExtension } from "./lib/extensions.js";
+import { buildGuard, buildProjectContext, buildScreen, SubagentExtension } from "./lib/extensions.js";
 import { createJudge } from "./lib/judge.js";
 import { openModelLayer } from "./lib/models.js";
 import { startServer } from "./lib/server.js";
@@ -62,6 +62,14 @@ const JUDGE = createJudge({
 const SERVE_LOG = path.join(DATA_DIR, "serve.log");
 const WORKSPACE = path.join(HERE, "workspace");
 
+// 工具结果护栏（issue #78）：flag（默认）| block | off。heuristic provider 下自动不安装。
+const SCREEN_MODE = /^(block|off)$/i.test(process.env.PI_DURABLE_JUDGE_SCREEN ?? "")
+	? process.env.PI_DURABLE_JUDGE_SCREEN.toLowerCase()
+	: "flag";
+const SCREEN_RING = []; // 最近 50 条护栏命中（host 侧持有，server 只读）
+const SCREEN_SINK = {}; // server 启动后注入 broadcast，host 侧 onFlag 经此发 SSE
+const SCREEN = SCREEN_MODE === "off" ? null : { mode: SCREEN_MODE, recent: SCREEN_RING, sink: SCREEN_SINK };
+
 const MODEL_LAYER = openModelLayer();
 const MODEL = MODEL_LAYER.model;
 
@@ -78,6 +86,17 @@ function buildRegistry() {
 	registry.install(CodingTools);
 	registry.install(buildProjectContext()); // injects workspace AGENTS.md when present
 	registry.install(buildGuard({ approvalsFile: APPROVALS_FILE, timingLog: TIMING_LOG, judge: JUDGE }));
+	if (SCREEN) {
+		const hostScreen = buildScreen({
+			judge: JUDGE, mode: SCREEN_MODE,
+			onFlag: (rec) => {
+				SCREEN_RING.unshift(rec);
+				if (SCREEN_RING.length > 50) SCREEN_RING.pop();
+				SCREEN_SINK.broadcast?.("screen", rec);
+			},
+		});
+		if (hostScreen) registry.install(hostScreen); // heuristic provider 下 buildScreen 返回 null
+	}
 	registry.install(SubagentExtension); // provides the `subagent` tool
 	return registry;
 }
@@ -728,6 +747,7 @@ async function cmdServe(args) {
 			serveLogFile: SERVE_LOG,
 			defaultAgent: DEFAULT_AGENT,
 			judge: JUDGE,
+			screen: SCREEN,
 		});
 	} catch (err) {
 		console.error("[serve] 启动失败:", err.message);
