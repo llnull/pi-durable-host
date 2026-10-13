@@ -27,6 +27,7 @@ Model config is **reused directly from your local pi CLI's** `~/.pi/agent/` — 
 - **Fork & retry**: fork a new session from any past question, rephrase and re-ask — the original session is untouched
 - **Context debugging**: inspect exactly what the model saw at any entry
 - **Dangerous-command approval**: guard interception + pending list + one-click approval
+- **Judge checkups**: Jev-like typed judgments on the control plane — every run gets an automatic checkup (tool errors / empty answers / repeat failures) + full audit log; flagged runs show a badge suggesting fork-and-retry
 - **Observability**: live task graph, tool timings, usage (tokens & cost per model)
 - **Ops**: `VACUUM INTO` online backup, hot restart, log rotation, gzip for large responses
 
@@ -74,6 +75,8 @@ Example custom relay (`~/.pi/agent/models.json`):
 | `PI_DURABLE_HOST` | default serve listen address (default `127.0.0.1`) |
 | `PI_DURABLE_DATA_DIR` | data directory (default `<repo>/data`; for tests / multi-instance) |
 | `PI_DURABLE_PROVIDER` / `PI_DURABLE_MODEL` / `PI_DURABLE_KEY_*` / `PI_DURABLE_PI_DIR` | see above |
+| `PI_DURABLE_JUDGE_URL` / `PI_DURABLE_JUDGE_KEY` / `PI_DURABLE_JUDGE_MODEL` | Jev/system-one compatible judge endpoint (falls back to the built-in heuristic rule judge when unset); endpoint failures degrade automatically — safety features are never disabled |
+| `PI_DURABLE_JUDGE_ROUTING` | set to `auto` to enable busy-time judge routing (classify steer/queue when whenBusy is not explicit) |
 
 Requires Node >= 22.19 (the `node:sqlite` ExperimentalWarning can be ignored).
 
@@ -129,6 +132,7 @@ Auth: once `PI_DURABLE_TOKEN` is set, every endpoint requires `Authorization: Be
 | `GET /api/state[?light=1]` | full snapshot (light = metadata only, ~1.2KB); `GET /api/events` for SSE incremental updates |
 | `GET /api/history` / `/api/entry?id=` / `/api/submission?id=` | transcript and submission records |
 | `GET /api/context?entryId=n` | model context at that entry (message digest, dump-proof) |
+| `GET /api/judge/log` / `GET /api/judge/checkups` | judge audit-log tail / run checkup records |
 | `GET /api/status` / `/api/tasks` / `/api/usage` / `/api/models` / `/api/sessions` / `/api/approvals` / `/api/files` / `/api/commands` | read-only status endpoints |
 | `GET /files/<path>` | workspace static files (path-traversal protected) |
 
@@ -159,6 +163,15 @@ Bash commands matching dangerous patterns (`sudo`, `rm -r/-f`, `mkfs`, `dd of=/d
 - Allowed-prefix wildcards: approving `git push origin*` whitelists every command starting with it
 
 Approvals/revocations take effect live on a running daemon (the guard re-reads the file on every call); after approving, ask the agent to retry the original command.
+
+### Judge checkups (Jev-like judgments)
+
+The host control plane integrates System One (Jev-like, 2026-09; analysis report in-repo at `workspace/2026-09-jev-system-one-analysis.html`) style typed judgments with three primitives: Noul (truth probability) / Choice (option + distribution) / Score (rubric rating). Principles: atomic questions composed in code, confidence routing (high confidence auto / low confidence to humans), destructive operations always human-approved, and judgments never enter the conversation context (keeps fork/CTX semantics clean).
+
+- **Run checkups**: every finished run is scored for tool errors / empty answers / repeat failures plus a judge health score; flagged runs show a ⚠ badge in the transcript (hover for details, hinting fork-and-retry via ⑂), with a sidebar checkup panel for history
+- **Guard overlay**: allowed commands are audited too (`data/judge-log.jsonl`); with a real Jev endpoint configured, semantic judgments kick in
+- **Busy-time routing** (opt-in): with `PI_DURABLE_JUDGE_ROUTING=auto`, when whenBusy is unspecified while busy → the judge classifies steer/queue; never auto-rejects
+- **Provider**: built-in heuristic rule judge by default (no probability semantics; returns null outside its rules); set `PI_DURABLE_JUDGE_URL` to a Jev/jevlike compatible endpoint for semantic judgments, with automatic degradation on failure
 
 ### Single-writer model (important)
 

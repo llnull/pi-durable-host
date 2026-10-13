@@ -22,6 +22,7 @@
 | `lib/extensions.js` | 自建扩展：host-project-context（AGENTS.md 注入）/ host-guard（审批流）/ host-team（subagent 工具） |
 | `lib/sessions.js` | 命名会话 ↔ conversation 映射 |
 | `lib/approvals.js` | 批准/待批清单（guard / CLI / daemon / UI 共用；tmp-file + rename 原子写） |
+| `lib/judge.js` | judge 子系统（issue #70）：三原语 noul/choice/score + provider 抽象（heuristic 内置 / system-one HTTP）+ 降级 + 审计 |
 | `lib/backup.js` | VACUUM INTO 快照 |
 | `lib/lock.js` | 单写者锁（PID 存活检查，崩溃遗留锁自动接管） |
 | `lib/daemon.js` | serve.json 发现 + CLI→daemon HTTP 转发 |
@@ -79,6 +80,23 @@ macOS 无 setsid），从工具里 nohup 的后台脚本会被一起杀——跨
 天然不进模型 context；只进 transcript 账本（回放可见、随 fork 复制、随 reset 剪裁）。
 事务注意：`conv.commit` 回调内必须 `await` 全部 Tx 操作，`void tx.appendEntry(...)` 会报
 "settled before its pending Tx operations"。
+
+### judge 子系统（issue #70）
+
+Jev-like（System One）类型化判断接入控制面：state 进、类型化决策出。与主对话模型的分工：
+agent run 是数据面（autoregressive 生成、工具循环），judge 是控制面（高频、廉价、类型化判断），
+两者完全解耦——判断不进 conversation context，fork/CTX 语义不受污染。
+
+- **provider 双层**：`system-one` HTTP 端点（PI_DURABLE_JUDGE_URL，Jev/jevlike 兼容形状）失败
+  自动降级 `heuristic`（内置规则），再不行返回 null——调用方走保守路径，安全功能永不禁用；
+- **heuristic 如实定位**：规则判断、无概率语义；规则外返回 null 不装懂（对照：LLM 判断的
+  概率输出天然可信度未知，规则判断的边界是显式的）；
+- **挂载点**：guard（放行也审计 + 异步旁路独立判断）、忙时自动路由（opt-in）、run 体检
+  （watch diff 检测 pi.live.run 消失；注意 async 函数同步段读不到当帧 lastView，需显式传值，
+  这是 PR #75 修过的竞态）；
+- **审计**：data/judge-log.jsonl 全量（含降级事件），GET /api/judge/log 尾览；
+- **置信路由原则**：高置信自动 / 低置信转人工 / 破坏性操作永远人工——阈值缩放随风险，
+  不随 judge 自信程度（校准未验证前尤其如此）。
 
 ### 性能实测基线（277 entries 会话）
 
