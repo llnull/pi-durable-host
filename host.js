@@ -69,6 +69,8 @@ const JUDGE = createJudge({
 	url: envOr("PI_DURABLE_JUDGE_URL", "url"),
 	key: envOr("PI_DURABLE_JUDGE_KEY", "key"),
 	model: envOr("PI_DURABLE_JUDGE_MODEL", "model") ?? "jev-latest",
+	// 纯 ckpt 网关 3s 足够；接了 LLM 回退的混合网关需要 20s+（慢域只在 run 结算异步触发，不阻塞输入）
+	timeoutMs: (() => { const n = Number(envOr("PI_DURABLE_JUDGE_TIMEOUT", "timeout") ?? 0); return Number.isFinite(n) && n > 0 ? n : undefined; })(),
 	log: JUDGE_LOG,
 });
 const SERVE_LOG = path.join(DATA_DIR, "serve.log");

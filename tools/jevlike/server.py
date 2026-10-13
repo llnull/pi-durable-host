@@ -32,6 +32,98 @@ from jevlike.train import move
 DEVICE = torch.device("cpu")
 MODELS: dict[str, tuple] = {}  # prefix -> (model, collator, config)
 FALLBACK = "reject"
+LLM: dict | None = None  # {baseUrl, key, model} —— ckpt 覆盖区外的语义问题转 LLM（混合网关）
+
+
+def _load_llm(provider_id: str, model_id: str) -> dict | None:
+    """从 ~/.pi/agent/{models-store,auth}.json 取 OpenAI 兼容端点；缺失返回 None（保持纯 ckpt 行为）。"""
+    import json as _json
+    from urllib.request import urlopen
+    from pathlib import Path as _Path
+    agent = _Path.home() / ".pi" / "agent"
+    try:
+        store = _json.loads((agent / "models-store.json").read_text(encoding="utf-8"))
+        auth = _json.loads((agent / "auth.json").read_text(encoding="utf-8"))
+        entry = next(m for m in store[provider_id]["models"] if m["id"] == model_id)
+        return {"baseUrl": entry["baseUrl"].rstrip("/"), "key": auth[provider_id]["key"], "model": model_id}
+    except Exception as e:  # 配置缺失不应让网关拒启
+        print(f"[jevlike-server] LLM 配置不可用（{e}），覆盖区外仍按 fallback={FALLBACK} 处理", file=sys.stderr)
+        return None
+
+
+def llm_spec(q: dict) -> tuple[str, str]:
+    """问题 → (给 LLM 的判定说明, 期望的 JSON 字段描述)。"""
+    t = q.get("type")
+    if t == "choice":
+        crit = q.get("criteria") or {}
+        opts = list(crit.keys()) if isinstance(crit, dict) else [str(i) for i in range(len(crit))]
+        return f"从这些选项里选一个: {opts}", '{"choice": <选项>, "confidence": <0-1>}'
+    if t == "score":
+        levels = q.get("criteria") or ["不健康", "健康"]
+        return f"按等级评估（答 level 序号，0 起）: {levels}", '{"level": <序号>, "confidence": <0-1>}'
+    return "陈述为真的概率（0-1）", '{"p": <0-1>}'
+
+
+def llm_answer_batch(questions: dict, context: str) -> dict:
+    """全部覆盖区外问题 → 一次 LLM 调用批量类型化应答。失败抛异常，调用方按单题 error 处理。"""
+    import json as _json
+    from urllib.request import Request, urlopen
+    specs = []
+    shape = {}
+    for qid, q in questions.items():
+        spec, fields = llm_spec(q)
+        specs.append(f"[{qid}] {q.get('instructions', '')}\n  {spec}")
+        shape[qid] = fields
+    prompt = (
+        f"你是类型化判断器（不生成正文）。根据状态逐一回答下列问题，只输出一个 JSON 对象。\n"
+        f"状态：\n{context[:6000]}\n\n问题：\n" + "\n".join(specs)
+        + f"\n输出格式（严格 JSON，键为问题 id，无其他文字）：{_json.dumps(shape, ensure_ascii=False)}"
+    )
+    req = Request(
+        LLM["baseUrl"] + "/chat/completions",
+        data=_json.dumps({
+            "model": LLM["model"],
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0,
+            "max_tokens": 2000,
+        }).encode(),
+        headers={"content-type": "application/json", "authorization": f"Bearer {LLM['key']}"},
+    )
+    with urlopen(req, timeout=60) as r:
+        body = _json.loads(r.read())
+    text = body["choices"][0]["message"]["content"]
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end <= start:
+        raise ValueError(f"LLM 响应非 JSON: {text[:120]}")
+    raw = _json.loads(text[start:end + 1])
+    out = {}
+    for qid, q in questions.items():
+        o = raw.get(qid)
+        if isinstance(o, str):  # 模型可能把值序列化成 JSON 字符串（跟随模板形状）
+            try:
+                o = _json.loads(o)
+            except Exception:
+                o = {"p": o, "choice": o, "level": o}
+        o = o if isinstance(o, dict) else {}
+        t = q.get("type")
+        try:
+            if t == "choice":
+                out[qid] = {"type": "choice", "choice": str(o.get("choice")), "confidence": float(o.get("confidence", 0.5)), "provider": "llm"}
+            elif t == "score":
+                levels = q.get("criteria") or ["不健康", "健康"]
+                lv = max(0, min(int(o.get("level", 0)), len(levels) - 1))
+                out[qid] = {"type": "score", "score": round(lv / (len(levels) - 1), 4), "confidence": float(o.get("confidence", 0.5)), "provider": "llm"}
+            else:
+                out[qid] = {"type": "noul", "noul": round(max(0.0, min(1.0, float(o.get("p", 0.5)))), 4), "provider": "llm"}
+        except Exception as e:
+            out[qid] = {"type": t, "error": f"parse: {e}"}
+    return out
+
+
+def llm_answer_one(q: dict, context: str) -> dict:
+    """兼容旧路径：单问批量。"""
+    qid = "q"
+    return llm_answer_batch({qid: q}, context)[qid]
 
 
 def serialize_state(state) -> str:
@@ -81,7 +173,9 @@ def pick_model(context: str):
 def answer_one(q: dict, context: str, ctx_budget: int) -> dict:
     picked = pick_model(context)
     if picked is None:
-        return {"type": q.get("type"), "error": "no-matching-domain"}  # 调用方按缺席处理
+        if LLM is None:
+            return {"type": q.get("type"), "error": "no-matching-domain"}  # 调用方按缺席处理
+        return llm_answer_one(q, context)
     model, collator, _ = picked
     options, t = options_for(q)
     # context 预算对齐训练配置（tiny 默认 192 字节）
@@ -122,11 +216,21 @@ class Handler(BaseHTTPRequestHandler):
         state = serialize_state(body.get("state"))
         questions = body.get("questions") or {}
         answers = {}
+        llm_pending = {}  # ckpt 覆盖区外的问题 → 一次 LLM 批量调答（串行逐问会撞 judge 侧超时）
         for qid, q in questions.items():
+            if pick_model(state) is None and LLM is not None:
+                llm_pending[qid] = q
+                continue
             try:
                 answers[qid] = answer_one(q, state, CTX_BUDGET)
             except Exception as e:  # 单问失败不出错整体
                 answers[qid] = {"type": q.get("type"), "error": str(e)}
+        if llm_pending:
+            try:
+                answers.update(llm_answer_batch(llm_pending, state))
+            except Exception as e:
+                for qid, q in llm_pending.items():
+                    answers[qid] = {"type": q.get("type"), "error": f"llm-batch: {e}"}
         out = json.dumps({"model": MODEL_NAME, "answers": answers, "usage": {"input_tokens": len(state), "output_tokens": 0, "latency_ms": int((time.time() - started) * 1000)}}).encode()
         self.send_response(200)
         self.send_header("content-type", "application/json")
@@ -144,12 +248,20 @@ def main():
     ap.add_argument("--name", default="jevlike-local")
     ap.add_argument("--fallback", choices=("first", "reject"), default="reject",
                     help="无前缀匹配时：reject=返回空 answers（judge 缺席语义，推荐）；first=用第一个模型")
+    ap.add_argument("--llm", default=None, metavar="MODEL",
+                    help="覆盖区外问题转 LLM（OpenAI 兼容，读 ~/.pi/agent 配置），如 --llm glm-5.3-flash")
+    ap.add_argument("--llm-provider", default="zai-coding-cn")
     ap.add_argument("--context-tokens", type=int, default=192)
     args = ap.parse_args()
     CTX_BUDGET = args.context_tokens
     MODEL_NAME = args.name
     global FALLBACK
     FALLBACK = args.fallback
+    global LLM
+    if args.llm:
+        LLM = _load_llm(args.llm_provider, args.llm)
+        if LLM:
+            print(f"[jevlike-server] LLM 回退 → {args.llm_provider}/{args.llm} @ {LLM['baseUrl']}", file=sys.stderr)
     for spec in args.ckpt:
         prefix, _, path = spec.partition("=")
         MODELS[prefix] = load_checkpoint(path, DEVICE)
