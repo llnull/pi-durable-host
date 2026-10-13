@@ -634,7 +634,7 @@ function runBodyHtml(g, ctx, isLastRun) {
   return html;
 }
 
-// 结算单卡（issue #78）：fan-out 原子问题的类型化答案 + 概率
+// 结算单卡（issue #78）：fan-out 原子问题的类型化答案 + 概率；fork 建议（issue #79）可点击直接分叉
 function settlementHtml(cu) {
   const s = cu.settlement.answers ?? {};
   const pct = (x) => x != null ? `${(x * 100).toFixed(0)}%` : "?";
@@ -646,7 +646,12 @@ function settlementHtml(cu) {
   if (s.silentFail?.p != null) rows.push(`静默失败 ${pct(s.silentFail.p)}`);
   if (s.confusion?.p != null) rows.push(`困惑 ${pct(s.confusion.p)}`);
   if (s.drift?.p != null) rows.push(`偏离 ${pct(s.drift.p)}`);
-  return `<div class="kv muted">📋 结算单（${esc(cu.settlement.provider ?? "")}${cu.settlement.ms ? " · " + cu.settlement.ms + "ms" : ""}）：${rows.join(" · ")}</div>`;
+  let forkSug = "";
+  const fs = cu.settlement.forkSuggestion;
+  if (fs?.entryId != null) {
+    forkSug = `<div class="kv">⑂ 建议从条目 <button class="fork-btn fork-suggest" data-fork="${esc(String(fs.entryId))}" style="background:none;border:none;color:var(--accent,#3b82f6);cursor:pointer;padding:0;font-weight:700">#${esc(String(fs.entryId))}</button> 分叉重试（置信 ${pct(fs.confidence)}${fs.candidates ? " · " + fs.candidates + " 候选" : ""}）</div>`;
+  }
+  return `<div class="kv muted">📋 结算单（${esc(cu.settlement.provider ?? "")}${cu.settlement.ms ? " · " + cu.settlement.ms + "ms" : ""}）：${rows.join(" · ")}</div>${forkSug}`;
 }
 
 function runHeadHtml(g, runNo, isOpen, busy) {
@@ -1465,7 +1470,10 @@ function applyEvent(name, data) {
       // run 体检结果（issue #70）：挂在对应 run 分组上
       if (data?.runFirstId != null) {
         judgeCheckups.set(String(data.runFirstId), data);
-        if (data.flags?.length) toast(`⚠ run 体检异常：${data.flags.join("、")}`);
+        // 注意力预算（issue #79）：只有需要人工介入的 run 才打扰（urgent 才 toast；flag 级进面板静默）
+        const urgent = (data.flags ?? []).some((f) => f.startsWith("needs-human:urgent"));
+        if (urgent) toast(`🚨 run 需要人工介入：${data.flags.join("、")}`);
+        else if (data.flags?.length) toast(`⚠ run 体检异常：${data.flags.join("、")}`);
       }
     } else if (name === "screen") {
       // 工具结果护栏命中（issue #78）：侧栏面板 + toast（仅 block 模式强提示）

@@ -132,3 +132,58 @@ test("结算单 fan-out：mock 端点一次调用返回全部问题答案（形�
 		server.close();
 	}
 });
+
+test("GATE_QUESTIONS 形状 + ready 语义（score 归一 + flags 阈值由 host 算）", async () => {
+	const { GATE_QUESTIONS } = await import("../lib/judge.js");
+	assert.equal(Object.keys(GATE_QUESTIONS).length, 3);
+	const { server, url } = await mockServer({
+		clean: { type: "noul", noul: 0.85 },
+		errors: { type: "noul", noul: 0.05 },
+		ready: { type: "score", score: 3, confidence: 0.7 }, // 4 级 → 归一 1.0
+	});
+	try {
+		const judge = createJudge({ url, key: "k", timeoutMs: 2000 });
+		const s = await judge.batch(GATE_QUESTIONS, "最近条目：…");
+		assert.equal(s.ready.score, 1);
+		assert.equal(s.clean.p, 0.85);
+		// host 侧阈值逻辑（与 server.js gate 端点一致）
+		const flags = [];
+		if (s.errors?.p >= 0.6) flags.push("unresolved-errors");
+		if (s.clean?.p <= 0.4) flags.push("incomplete-work");
+		if (s.ready?.score < 0.5) flags.push("readiness");
+		assert.equal(flags.length, 0);
+	} finally {
+		server.close();
+	}
+});
+
+test("结算单 forkSuggestion：choice over 候选条目（一次调用，criteria=候选 id）", async () => {
+	let seen = null;
+	const server = http.createServer((req, res) => {
+		let body = "";
+		req.on("data", (c) => (body += c));
+		req.on("end", () => {
+			seen = JSON.parse(body);
+			res.setHeader("content-type", "application/json");
+			res.end(JSON.stringify({
+				answers: {
+					forkWorthy: { type: "choice", choice: "yes", confidence: 0.62 },
+					pick: { type: "choice", choice: "12", confidence: 0.71, probabilities: { "12": 0.71, "15": 0.2 } },
+				},
+			}));
+		});
+	});
+	const url = await new Promise((r) => server.listen(0, "127.0.0.1", () => r(`http://127.0.0.1:${server.address().port}`)));
+	try {
+		const judge = createJudge({ url, key: "k", timeoutMs: 2000 });
+		const s = await judge.batch({
+			forkWorthy: SETTLEMENT_QUESTIONS.forkWorthy,
+			pick: { type: "choice", instructions: "从哪个历史位置分叉重试？", criteria: { 12: "第一次尝试", 15: "第二次尝试" } },
+		}, "state");
+		assert.equal(seen.questions.pick.criteria["12"], "第一次尝试"); // criteria 以条目 id 为键
+		assert.equal(s.forkWorthy.choice, "yes");
+		assert.equal(s.pick.choice, "12");
+	} finally {
+		server.close();
+	}
+});
