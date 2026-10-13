@@ -308,6 +308,9 @@
     <div class="panel" id="judgePanel" style="display:none">
       <h3>体检（judge）</h3><div id="judgeBody" class="muted">…</div>
     </div>
+    <div class="panel" id="screenPanel" style="display:none">
+      <h3>护栏（screen）</h3><div id="screenBody" class="muted">…</div>
+    </div>
     <div class="panel" id="tasksPanel" style="display:none">
       <h3>任务图</h3><div id="tasksBody"></div>
     </div>
@@ -626,7 +629,24 @@ function runBodyHtml(g, ctx, isLastRun) {
   let html = "";
   for (const e of g.entries) html += entryHtmlCached(e, ctx);
   if (isLastRun && ctx.busy) html += liveTailHtml(ctx);
+  const cu = judgeCheckups.get(String(g.firstId));
+  if (cu?.settlement) html += settlementHtml(cu);
   return html;
+}
+
+// 结算单卡（issue #78）：fan-out 原子问题的类型化答案 + 概率
+function settlementHtml(cu) {
+  const s = cu.settlement.answers ?? {};
+  const pct = (x) => x != null ? `${(x * 100).toFixed(0)}%` : "?";
+  const rows = [];
+  if (s.needsHuman) rows.push(`人介入 <b>${esc(s.needsHuman.choice)}</b> ${pct(s.needsHuman.confidence)}`);
+  if (s.forkWorthy) rows.push(`重试价值 <b>${esc(s.forkWorthy.choice)}</b> ${pct(s.forkWorthy.confidence)}`);
+  if (s.health) rows.push(`健康 <b>${s.health.score.toFixed(2)}</b>${s.health.confidence != null ? " " + pct(s.health.confidence) : ""}`);
+  if (s.answered?.p != null) rows.push(`切题 ${pct(s.answered.p)}`);
+  if (s.silentFail?.p != null) rows.push(`静默失败 ${pct(s.silentFail.p)}`);
+  if (s.confusion?.p != null) rows.push(`困惑 ${pct(s.confusion.p)}`);
+  if (s.drift?.p != null) rows.push(`偏离 ${pct(s.drift.p)}`);
+  return `<div class="kv muted">📋 结算单（${esc(cu.settlement.provider ?? "")}${cu.settlement.ms ? " · " + cu.settlement.ms + "ms" : ""}）：${rows.join(" · ")}</div>`;
 }
 
 function runHeadHtml(g, runNo, isOpen, busy) {
@@ -641,7 +661,7 @@ function runHeadHtml(g, runNo, isOpen, busy) {
   let judgeBadge = "";
   if (cu) {
     if (cu.flags?.length) {
-      const detail = `${cu.flags.join("、")}（工具 ${cu.tools ?? 0} 次/错 ${cu.toolErrors ?? 0}）`;
+      const detail = `${cu.flags.join("、")}（工具 ${cu.tools ?? 0} 次/错 ${cu.toolErrors ?? 0}）${cu.settlement ? "。结算单已附在本轮详情末尾" : ""}`;
       judgeBadge = `<span class="judge-badge warn" title="run 体检：${esc(detail)}。可悬停本轮首条提问用 ⑂ 分叉重试">⚠ ${esc(cu.flags[0].split(":")[0])}${cu.flags.length > 1 ? "+" + (cu.flags.length - 1) : ""}</span>`;
     } else if (cu.health != null) {
       judgeBadge = `<span class="judge-badge ok" title="run 体检：健康分 ${cu.health}${cu.healthProvider ? "（" + esc(cu.healthProvider) + "）" : ""}">✓</span>`;
@@ -856,6 +876,23 @@ function render(view) {
       }).join("");
     setPanelBadge("judgePanel", bad);
   } else jp.style.display = "none";
+
+  // 侧栏：护栏命中（issue #78）——最近 8 条 + 命中徽标
+  const sp = $("screenPanel");
+  if (screenFlags.length) {
+    sp.style.display = "";
+    const hits = screenFlags.filter((r) => (r.flags ?? []).includes("injection")).length;
+    $("screenBody").innerHTML =
+      `<div class="kv">最近 <b>${screenFlags.length}</b> 条 · 注入命中 <b style="color:${hits ? "var(--amber)" : "inherit"}">${hits}</b></div>` +
+      screenFlags.slice(0, 8).map((r) => {
+        const what = (r.flags ?? []).join("、") || "可疑";
+        const p = r.injection != null ? `注入 ${(r.injection * 100).toFixed(0)}%` : "";
+        const t = r.at ? new Date(r.at).toLocaleTimeString() : "";
+        const mark = (r.flags ?? []).includes("injection") ? "🛡" : "⚠";
+        return `<div class="kv" title="${esc(r.preview ?? "")}">${mark} <b>${esc(r.tool ?? "?")}</b> · ${esc(what)}${p ? " · " + esc(p) : ""} · ${esc(t)}</div>`;
+      }).join("");
+    setPanelBadge("screenPanel", hits);
+  } else sp.style.display = "none";
 }
 
 // ---------- 交互 ----------
@@ -1401,13 +1438,16 @@ document.addEventListener("visibilitychange", () => {
 const UI_PROTO = 2; // 与 lib/server.js 的 SERVER_PROTO 对应
 let uiView = null;
 const judgeCheckups = new Map(); // runFirstId → 体检记录（SSE 'judge' 事件 + 初始拉取，issue #70）
+const screenFlags = []; // 最近护栏命中（SSE 'screen' 事件 + 初始拉取，issue #78）
 
 /** 初始拉取体检记录（页面加载/刷新后也能看到历史徽标） */
 (async () => {
   try {
     const { items } = await api("/api/judge/checkups");
     for (const c of items ?? []) judgeCheckups.set(String(c.runFirstId), c);
-    if (items?.length) scheduleRender(uiView);
+    const scr = await api("/api/judge/screen").catch(() => null);
+    for (const r of (scr?.items ?? []).slice().reverse()) screenFlags.unshift(r);
+    if (items?.length || screenFlags.length) scheduleRender(uiView);
   } catch {}
 })();
 
@@ -1427,6 +1467,11 @@ function applyEvent(name, data) {
         judgeCheckups.set(String(data.runFirstId), data);
         if (data.flags?.length) toast(`⚠ run 体检异常：${data.flags.join("、")}`);
       }
+    } else if (name === "screen") {
+      // 工具结果护栏命中（issue #78）：侧栏面板 + toast（仅 block 模式强提示）
+      screenFlags.unshift(data);
+      if (screenFlags.length > 50) screenFlags.pop();
+      if (data.mode === "block") toast(`🛡 工具输出被拦截：${data.tool}（${(data.flags ?? []).join("、")}）`);
     } else if (name === "live") {
       uiView.docs = { ...(uiView.docs ?? {}), "pi.live": data.live };
     } else if (name === "docs") {
@@ -1443,7 +1488,7 @@ function applyEvent(name, data) {
 function connect() {
   const es = new EventSource("/api/events");
   es.addEventListener("session", (ev) => { renderSessions(JSON.parse(ev.data)); });
-  for (const name of ["view", "entries", "live", "docs", "judge"]) es.addEventListener(name, (ev) => applyEvent(name, JSON.parse(ev.data)));
+  for (const name of ["view", "entries", "live", "docs", "judge", "screen"]) es.addEventListener(name, (ev) => applyEvent(name, JSON.parse(ev.data)));
   es.onerror = () => { $("conn").textContent = "重连中…"; };
 }
 connect();
