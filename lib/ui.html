@@ -1365,7 +1365,7 @@ async function refreshApprovals() {
         <button class="mini primary" data-approve="${esc(item.command)}">批准</button><button class="mini" data-dismiss="${esc(item.command)}">忽略</button></div>`;
     }
     if (approved.length) {
-      html += `<div class="muted" style="margin:8px 0 4px">已批准（精确匹配） <button class="mini danger" data-clear-approved="1">全部归档清空</button></div>`;
+      html += `<div class="muted" style="margin:8px 0 4px">已批准（精确匹配） <button class="mini danger" data-clear-approved="1">全部清空</button></div>`;
       for (const [i, item] of approved.entries()) {
         html += `<div class="kv">✅ <code class="md-inline">${esc(item.command)}</code> <button class="mini danger" data-revoke="${i + 1}">撤销</button></div>`;
       }
@@ -1384,7 +1384,7 @@ $("approvalBody").addEventListener("click", async (ev) => {
     if (btn.dataset.approve) { await api("/api/approve", { method: "POST", body: JSON.stringify({ command: btn.dataset.approve }) }); toast("已批准，可让 agent 重试原命令", "ok"); }
     else if (btn.dataset.dismiss) { await api("/api/approvals/dismiss", { method: "POST", body: JSON.stringify({ command: btn.dataset.dismiss }) }); }
     else if (btn.dataset.revoke) { await api("/api/approve/revoke", { method: "POST", body: JSON.stringify({ index: +btn.dataset.revoke }) }); }
-    else if (btn.dataset.clearApproved) { await api("/api/approvals/clear", { method: "POST", body: "{}" }); toast("已批准清单已归档清空", "ok"); }
+    else if (btn.dataset.clearApproved) { await api("/api/approvals/clear", { method: "POST", body: "{}" }); toast("已批准清单已清空", "ok"); }
     approvalsHtml = ""; await refreshApprovals();
   } catch (err) { toast(err.message); }
 });
