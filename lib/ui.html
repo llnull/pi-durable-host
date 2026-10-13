@@ -1291,6 +1291,13 @@ function renderSessions(payload) {
     location.reload();
     return;
   }
+  // UI 内容握手（issue #91）：UI 功能上线但协议未变时，旧页面自动重载拿到新面板。
+  // 旧页面无 window.UI_VER（undefined）也触发重载；重载后注入值相等即稳定，不会循环。
+  if (payload.ui !== undefined && window.UI_VER !== payload.ui) {
+    console.warn(`[ui-ver] 页面 ${window.UI_VER} ≠ daemon ${payload.ui}，自动重载`);
+    location.reload();
+    return;
+  }
   const sel = $("sessionSel");
   sel.innerHTML = payload.sessions.map((s) => `<option value="${esc(s.name)}"${s.name === payload.current ? " selected" : ""}>${esc(s.name)}</option>`).join("");
   document.title = `Pi Durable · ${payload.current}`;
