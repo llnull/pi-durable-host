@@ -39,7 +39,8 @@
   header.top select option { color: #1a2233; }
   header.top button:hover { background: rgba(255,255,255,.22); }
   #approvalBody .kv { margin: 8px 0; }
-  #approvalBody pre.code { margin: 4px 0; }
+  /* 审批命令在 300px 侧栏里纵向换行 + 限高，避免横向挤压导致看不全 */
+  #approvalBody pre.code { margin: 4px 0; white-space: pre-wrap; word-break: break-all; overflow-x: hidden; max-height: 18vh; overflow-y: auto; }
   #approvalBody .mini { border: 1px solid var(--line); background: var(--paper); color: var(--soft); border-radius: 8px; padding: 3px 10px; font-size: 12px; cursor: pointer; margin-right: 6px; }
   #approvalBody .mini.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   #approvalBody .mini.danger { color: var(--red); border-color: #f2c4c0; }
@@ -76,8 +77,9 @@
   body.layout-focus .side { display: none; }
   .panel { background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; min-width: 0; max-width: 100%; }
   #transcript { overflow-y: auto; scrollbar-gutter: stable; min-height: 0; padding-bottom: 18px; }
-  .side { display: flex; flex-direction: column; gap: 14px; min-width: 0; min-height: 0; overflow-y: auto; }
-  .side .panel { overflow: hidden; }
+  /* 侧栏：自身是滚动容器；面板 flex:none 禁止压扁（flex item 默认 shrink 会配合 overflow:hidden 把内容裁成不可达），长内容交给面板体内滚 */
+  .side { display: flex; flex-direction: column; gap: 14px; min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+  .side .panel { flex: none; overflow: hidden; }
   .panel h3 { margin: 0 0 8px; font-size: 13px; color: var(--faint); font-weight: 600; letter-spacing: .06em; }
   .side .panel > h3 { cursor: pointer; user-select: none; display: flex; align-items: center; gap: 6px; }
   .side .panel > h3:hover { color: var(--soft); }
@@ -253,9 +255,14 @@
   .filelink { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; word-break: break-all; }
   .filelink:hover { background: var(--accent-soft); }
   #filesBody .kv { margin: 3px 0; }
-  /* 侧栏动态内容面板限高，超出部分内部滚动，避免把其它面板挤到页尾 */
-  #liveBody, #inboxBody, #filesBody { max-height: 38vh; overflow-y: auto; }
-  #judgeBody { max-height: 30vh; overflow-y: auto; }
+  /* 侧栏面板体统一限高内滚：长内容不撑爆侧栏，也不被面板压扁裁剪（issue #85）。
+     分档：实时/审批内容密度高给 40vh；用量/体检/护栏 26vh；其余 32vh。面板间滚动由 .side 承担。 */
+  #liveBody, #inboxBody, #approvalBody, #usageBody, #judgeBody, #screenBody, #tasksBody, #filesBody {
+    max-height: 32vh; overflow-y: auto; overscroll-behavior: contain;
+    scrollbar-width: thin; scrollbar-color: var(--line) transparent;
+  }
+  #liveBody, #approvalBody { max-height: 40vh; }
+  #usageBody, #judgeBody, #screenBody { max-height: 26vh; }
   .judge-badge { font-size: 11px; font-weight: 700; border-radius: 5px; padding: 0 6px; white-space: nowrap; }
   .judge-badge.warn { color: var(--amber); background: var(--amber-bg); cursor: help; }
   .judge-badge.ok { color: #0b7a3e; background: #e6f6ec; cursor: help; }
@@ -1377,10 +1384,17 @@ function applyPanelCollapsed(p) {
   p.classList.toggle("collapsed", off);
   const caret = p.querySelector(".pcaret");
   if (caret) caret.textContent = off ? "▸" : "▾";
+  const h = p.querySelector("h3");
+  if (h) h.setAttribute("aria-expanded", String(!off));
 }
 for (const p of document.querySelectorAll(".side .panel")) {
   const h = p.querySelector("h3");
   if (!h) continue;
+  h.setAttribute("role", "button");
+  h.setAttribute("tabindex", "0");
+  h.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); h.click(); }
+  });
   const caret = document.createElement("span");
   caret.className = "pcaret";
   caret.textContent = "▾";
