@@ -145,11 +145,12 @@ async function openHarness({ takeover = false } = {}) {
 				retry: { maxRetries: 3 },
 				// Automatic compaction: a background summary starts well before the
 				// ceiling; generation only blocks when the next request would not fit.
+				// env 覆盖（测试/小窗口部署用，不设即默认）：PI_DURABLE_COMPACT_{RESERVE,KEEP_RECENT,BACKGROUND}。仅 env，不进 host.json（非运行时配置）。
 				compaction: {
 					enabled: true,
-					reserveTokens: 16384,
-					keepRecentTokens: 20000,
-					backgroundTokens: 32768,
+					reserveTokens: Number(process.env.PI_DURABLE_COMPACT_RESERVE ?? 16384),
+					keepRecentTokens: Number(process.env.PI_DURABLE_COMPACT_KEEP_RECENT ?? 20000),
+					backgroundTokens: Number(process.env.PI_DURABLE_COMPACT_BACKGROUND ?? 32768),
 				},
 				progress: { partialIntervalMs: 100, outputIntervalMs: 100 },
 				toolExecution: "parallel",
