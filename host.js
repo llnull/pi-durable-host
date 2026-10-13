@@ -51,6 +51,14 @@ const LOCK_FILE = path.join(DATA_DIR, "host.lock");
 const APPROVALS_FILE = path.join(DATA_DIR, "approvals.json");
 const TIMING_LOG = path.join(DATA_DIR, "tool-timing.log");
 const JUDGE_LOG = path.join(DATA_DIR, "judge-log.jsonl");
+
+// Judge 子系统（issue #70）：模块级单例，buildRegistry（guard）与 serve（忙时路由/run 体检）共用。
+const JUDGE = createJudge({
+	url: process.env.PI_DURABLE_JUDGE_URL || undefined,
+	key: process.env.PI_DURABLE_JUDGE_KEY || undefined,
+	model: process.env.PI_DURABLE_JUDGE_MODEL || "jev-latest",
+	log: JUDGE_LOG,
+});
 const SERVE_LOG = path.join(DATA_DIR, "serve.log");
 const WORKSPACE = path.join(HERE, "workspace");
 
@@ -69,14 +77,7 @@ function buildRegistry() {
 	const registry = createRegistry();
 	registry.install(CodingTools);
 	registry.install(buildProjectContext()); // injects workspace AGENTS.md when present
-	const JUDGE = createJudge({
-	url: process.env.PI_DURABLE_JUDGE_URL || undefined,
-	key: process.env.PI_DURABLE_JUDGE_KEY || undefined,
-	model: process.env.PI_DURABLE_JUDGE_MODEL || "jev-latest",
-	log: JUDGE_LOG,
-});
-
-registry.install(buildGuard({ approvalsFile: APPROVALS_FILE, timingLog: TIMING_LOG, judge: JUDGE }));
+	registry.install(buildGuard({ approvalsFile: APPROVALS_FILE, timingLog: TIMING_LOG, judge: JUDGE }));
 	registry.install(SubagentExtension); // provides the `subagent` tool
 	return registry;
 }
@@ -383,7 +384,8 @@ function printTaskGraph(graph) {
 		return;
 	}
 	for (const node of nodes) {
-		const state = node.state.status === "waiting" ? `waiting on ${node.state.on.join(", ")} (${node.state.policy})` : `${node.state.status}${node.state.phase ? ` · ${node.state.phase}` : ""}`;
+		const st = node.state ?? {};
+		const state = st.status === "waiting" ? `waiting on ${(st.on ?? []).join(", ")} (${st.policy ?? "allSettled"})` : `${st.status ?? "unknown"}${st.phase ? ` · ${st.phase}` : ""}`;
 		console.log(`#${node.id} ${node.kind} ${state}${node.background ? " [background]" : ""}${node.abortRequested ? " [abort requested]" : ""}`);
 		console.log(`   owner: ${node.owner ? `task #${node.owner}` : `conversation ${node.conversationId}`}${node.conversations.length ? ` · owns conversations: ${node.conversations.join(", ")}` : ""}`);
 	}
@@ -725,6 +727,7 @@ async function cmdServe(args) {
 			dataDir: DATA_DIR,
 			serveLogFile: SERVE_LOG,
 			defaultAgent: DEFAULT_AGENT,
+			judge: JUDGE,
 		});
 	} catch (err) {
 		console.error("[serve] 启动失败:", err.message);
