@@ -1,0 +1,4 @@
+# 运行时产物不入库：jevlike 训练数据与 checkpoint 按部署流程生成
+tools/jevlike/data-*/
+tools/jevlike/*.pt
+tools/jevlike/ckpt.pt

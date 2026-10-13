@@ -51,8 +51,33 @@ guard 破坏性域因质量不足**建议保持 heuristic**（本地头对 guard
 ## 文件
 
 - `server.py` — 契约网关（choice 原生 / noul→二元 / score→等级归一），按 state 前缀域路由
-- `gen-data.py` — 三个判断域的合成数据生成（模板组合 + 边界带 + held-out 切分）
+- `gen-data.py` — 三个判断域的合成数据生成（模板组合 + 边界带 + held-out 切分；seed 固定 42/7，重建可复现）
 - `train.py` — 训练 + 真实调用形状复测脚本
+
+## 持久化（/tmp 是易失的）
+
+一切可再生的东西不要放 /tmp。PoC 期的持久件在 `~/jevlike-lab/`（ext4 原生，勿放 /mnt/d——9p 慢盘加载模型慢百倍）：
+
+```
+~/jevlike-lab/
+├── runs/host-v8.pt        # 当前最优 checkpoint（287KB）
+├── data-host*/            # 已切分数据集（seed 固定，可用 gen-data.py 复现）
+├── jevlike-src/           # jevlike 源码 clone（pip install -e 用）
+├── models/                # llama.cpp 实验用 GGUF
+├── llamacpp-probes/       # llama.cpp 评测脚本（logit_bias 打分法）
+└── *.py                   # PoC 评测脚本（smoke/eval/baseline/verify）
+```
+
+venv 在 `~/.venvs/jevlike`（pip cache 持久，重建离线秒级）。
+**主机重启后恢复只需一条命令**：
+
+```sh
+cd ~/jevlike-lab && ~/.venvs/jevlike/bin/python server.py --port 7610 \
+  --ckpt "command:=runs/host-v8.pt" --ckpt "content:=runs/host-v8.pt" \
+  --ckpt "output:=runs/host-v8.pt" --fallback reject
+```
+
+（若 venv 也丢了：`python3 -m venv ~/.venvs/jevlike` + 重跑部署第 1 步，pip cache 命中即秒装。）
 
 ## 限制
 
