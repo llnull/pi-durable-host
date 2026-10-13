@@ -1,3 +1,5 @@
+**中文** | [English](README.en.md)
+
 # Pi Durable Host
 
 [`@earendil-works/pi-durable`](https://github.com/earendil-works/pi/tree/main/packages/durable)（实验性，API 随版本变动）的本地 host：把持久化 agent 会话跑在 SQLite（WAL）上，提供 **Web UI / CLI / REST API** 三种入口。进程崩溃可恢复，改代码后热重启零数据损失。
