@@ -9,6 +9,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { once } from "node:events";
+import { spawn } from "node:child_process";
 import { ensureJudgeSidecar, probeGateway } from "../lib/sidecar.js";
 
 const spawned = [];
@@ -169,14 +170,17 @@ test("readGatewayStatus：空目录 → 全空快照，url 为空不探测", asy
 test("readGatewayStatus：装配代际记录/日志尾/ckpt 清单", async () => {
 	const dir = tmpData();
 	mkdirSync(path.join(dir, "jevlike"), { recursive: true });
-	const gen = { pid: 4321, argsHash: "abcd1234efgh", script: "server.py", startedAt: "2026-10-14T02:59:22.619Z", command: "python" };
+	// managed 语义 = 代际 pid 存活（#113），fixture 用真活进程
+	const sleeper = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { stdio: "ignore" });
+	spawned.push(sleeper);
+	const gen = { pid: sleeper.pid, argsHash: "abcd1234efgh", script: "server.py", startedAt: "2026-10-14T02:59:22.619Z", command: "python" };
 	writeFileSync(path.join(dir, "jevlike", "gateway.json"), JSON.stringify(gen));
 	writeFileSync(path.join(dir, "jevlike", "gateway.log"), ["行一", "行二", "行三", "行四", "行五"].join("\n"));
 	writeFileSync(path.join(dir, "jevlike", "host-v8.pt"), Buffer.alloc(2048));
 	const s = await readGatewayStatus({ url: "http://127.0.0.1:1", sidecar: { command: "python", args: ["server.py"] }, dataDir: dir, probeTimeoutMs: 120 });
 	assert.equal(s.configured, true);
 	assert.equal(s.managed, true);
-	assert.equal(s.gen?.pid, 4321);
+	assert.equal(s.gen?.pid, sleeper.pid);
 	assert.deepEqual(s.log, ["行一", "行二", "行三", "行四", "行五"]); // 尾 12 行 > 实际 5 行，全保留；截断逻辑由下个用例覆盖
 	assert.equal(s.ckpts.length, 1);
 	assert.equal(s.ckpts[0].file, "host-v8.pt");
@@ -258,4 +262,34 @@ http.createServer((req, res) => { res.writeHead(200); res.end("{}"); }).listen($
 	assert.ok(second?.child, "SIGKILL 升级后换代应拉起新进程");
 	assert.notEqual(second.child.pid, first.child.pid, "应是新 pid");
 	assert.ok(first.child.signalCode || first.child.exitCode !== null, "拒收 TERM 的旧进程应被 SIGKILL 收掉");
+});
+
+test("ensureJudgeSidecar：探活瞬断（上一代慢响应）→ 先停旧再拉新，不盲拉", async () => {
+	// 复现 #113 事故：上一代活着但响应 >探活超时 → 旧代码直接盲拉，撞 EADDRINUSE
+	const port = await freePort();
+	const dataDir = tmpData();
+	const slow = path.join(dataDir, "slow-gateway.mjs");
+	writeFileSync(slow, `import http from "node:http";
+http.createServer((req, res) => { setTimeout(() => { res.writeHead(200); res.end("{}"); }, 2000); }).listen(${port}, "127.0.0.1");
+`);
+	const first = await ensureJudgeSidecar({
+		url: `http://127.0.0.1:${port}`,
+		dataDir,
+		sidecar: { command: process.execPath, args: [slow] },
+		readyMs: 1500,
+	});
+	assert.ok(first?.child, "第一代（慢响应网关）应拉起");
+	spawned.push(first.child);
+	assert.equal(first.child.exitCode, null, "第一代应存活（就绪探测超时≠死亡）");
+	const second = await ensureJudgeSidecar({
+		url: `http://127.0.0.1:${port}`,
+		dataDir,
+		sidecar: { command: process.execPath, args: [slow, "gen2"] },
+		readyMs: 1500,
+	});
+	spawned.push(second?.child);
+	assert.ok(second?.child, "应停掉活着的上一代并拉起新进程");
+	assert.ok(second.child.exitCode === null, "新进程不应撞端口死掉");
+	await new Promise((resolve) => setTimeout(resolve, 300));
+	assert.ok(first.child.signalCode || first.child.exitCode !== null, "上一代应已被停掉");
 });
