@@ -257,12 +257,13 @@
   #filesBody .kv { margin: 3px 0; }
   /* 侧栏面板体统一限高内滚：长内容不撑爆侧栏，也不被面板压扁裁剪（issue #85）。
      分档：实时/审批内容密度高给 40vh；用量/体检/护栏 26vh；其余 32vh。面板间滚动由 .side 承担。 */
-  #liveBody, #inboxBody, #approvalBody, #usageBody, #judgeBody, #screenBody, #tasksBody, #filesBody {
+  #liveBody, #inboxBody, #approvalBody, #usageBody, #judgeBody, #screenBody, #jevBody, #tasksBody, #filesBody {
     max-height: 32vh; overflow-y: auto; overscroll-behavior: contain;
     scrollbar-width: thin; scrollbar-color: var(--line) transparent;
   }
   #liveBody, #approvalBody { max-height: 40vh; }
-  #usageBody, #judgeBody, #screenBody { max-height: 26vh; }
+  #usageBody, #judgeBody, #screenBody, #jevBody { max-height: 26vh; }
+  .jev-log { margin: 4px 0 0; font-size: 11px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; color: var(--faint); font-family: var(--mono, monospace); }
   .judge-badge { font-size: 11px; font-weight: 700; border-radius: 5px; padding: 0 6px; white-space: nowrap; }
   .judge-badge.warn { color: var(--amber); background: var(--amber-bg); cursor: help; }
   .judge-badge.ok { color: #0b7a3e; background: #e6f6ec; cursor: help; }
@@ -317,6 +318,9 @@
     </div>
     <div class="panel" id="screenPanel" style="display:none">
       <h3>护栏（screen）</h3><div id="screenBody" class="muted">…</div>
+    </div>
+    <div class="panel" id="jevPanel" style="display:none">
+      <h3>网关（jevlike）</h3><div id="jevBody" class="muted">…</div>
     </div>
     <div class="panel" id="tasksPanel" style="display:none">
       <h3>任务图</h3><div id="tasksBody"></div>
@@ -1431,6 +1435,39 @@ function setPanelBadge(id, n) {
   b.textContent = n > 0 ? String(n) : "";
   b.classList.toggle("on", n > 0);
 }
+
+// ---------- 侧栏：jevlike 网关（issue #113）----------
+// 独立拉取（不跟 render 走）：网关状态与对话流无关，10s 节奏足够；掉线/换代给徽标。
+function fmtUptime(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 90) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 90) return `${m}m${s % 60 ? (s % 60) + "s" : ""}`;
+  return `${Math.floor(m / 60)}h${m % 60 ? (m % 60) + "m" : ""}`;
+}
+async function refreshJe() {
+  let s = null;
+  try { s = await api("/api/jev/gateway"); } catch { return; }
+  const panel = $("jevPanel");
+  const show = s && (s.configured || s.managed || s.alive || (s.ckpts?.length ?? 0) > 0);
+  if (!show) { panel.style.display = "none"; return; }
+  panel.style.display = "";
+  const gen = s.gen;
+  let state, color = "var(--ok, #1a7f37)";
+  if (s.alive && gen) state = `运行中 · pid ${gen.pid}`;
+  else if (s.alive) { state = "在位（非托管）"; color = "var(--amber)"; }
+  else if (gen) { state = `无响应（记录 pid ${gen.pid}）`; color = "var(--amber)"; }
+  else { state = "未运行"; color = "var(--amber)"; }
+  const up = gen?.startedAt ? fmtUptime(Date.now() - new Date(gen.startedAt).getTime()) : "";
+  const rows = [];
+  rows.push(`<div class="kv"><b style="color:${color}">●</b> <b>${esc(state)}</b>${up ? ` · 已运行 ${esc(up)}` : ""}${s.configured ? "" : ` · <span class="muted">未配 sidecar</span>`}</div>`);
+  if (gen?.argsHash) rows.push(`<div class="kv">代际 <code class="md-inline">${esc(gen.argsHash)}</code>${gen.startedAt ? ` · ${new Date(gen.startedAt).toLocaleTimeString()}` : ""}</div>`);
+  for (const c of s.ckpts ?? []) rows.push(`<div class="kv">ckpt <b>${esc(c.file)}</b> · ${(c.bytes / 1024).toFixed(0)}KB · ${new Date(c.mtime).toLocaleString()}</div>`);
+  if (s.log?.length) rows.push(`<pre class="jev-log">${esc(s.log.slice(-4).join("\n"))}</pre>`);
+  $("jevBody").innerHTML = rows.join("");
+  setPanelBadge("jevPanel", s.alive ? 0 : 1);
+}
+refreshJe(); setInterval(refreshJe, 10000);
 
 refreshApprovals(); loadSessions(); loadModels(); loadCommands();
 
