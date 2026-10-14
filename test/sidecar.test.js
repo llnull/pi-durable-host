@@ -149,3 +149,50 @@ test("probeGateway：健康网关 true / 死端口 false", async () => {
 	}
 	assert.equal(await probeGateway(`http://127.0.0.1:${port}`), false);
 });
+
+// ---- readGatewayStatus（issue #113：UI 网关面板数据源）----
+import { readGatewayStatus } from "../lib/sidecar.js";
+import { mkdirSync } from "node:fs";
+
+test("readGatewayStatus：空目录 → 全空快照，url 为空不探测", async () => {
+	const dir = tmpData();
+	const s = await readGatewayStatus({ url: null, sidecar: null, dataDir: dir });
+	assert.equal(s.configured, false);
+	assert.equal(s.alive, false);
+	assert.equal(s.managed, false);
+	assert.equal(s.gen, null);
+	assert.deepEqual(s.log, []);
+	assert.deepEqual(s.ckpts, []);
+	assert.equal(s.url, null);
+});
+
+test("readGatewayStatus：装配代际记录/日志尾/ckpt 清单", async () => {
+	const dir = tmpData();
+	mkdirSync(path.join(dir, "jevlike"), { recursive: true });
+	const gen = { pid: 4321, argsHash: "abcd1234efgh", script: "server.py", startedAt: "2026-10-14T02:59:22.619Z", command: "python" };
+	writeFileSync(path.join(dir, "jevlike", "gateway.json"), JSON.stringify(gen));
+	writeFileSync(path.join(dir, "jevlike", "gateway.log"), ["行一", "行二", "行三", "行四", "行五"].join("\n"));
+	writeFileSync(path.join(dir, "jevlike", "host-v8.pt"), Buffer.alloc(2048));
+	const s = await readGatewayStatus({ url: "http://127.0.0.1:1", sidecar: { command: "python", args: ["server.py"] }, dataDir: dir, probeTimeoutMs: 120 });
+	assert.equal(s.configured, true);
+	assert.equal(s.managed, true);
+	assert.equal(s.gen?.pid, 4321);
+	assert.deepEqual(s.log, ["行一", "行二", "行三", "行四", "行五"]); // 尾 12 行 > 实际 5 行，全保留；截断逻辑由下个用例覆盖
+	assert.equal(s.ckpts.length, 1);
+	assert.equal(s.ckpts[0].file, "host-v8.pt");
+	assert.equal(s.ckpts[0].bytes, 2048);
+	assert.ok(s.ckpts[0].mtime);
+	assert.equal(s.alive, false); // 端口 1 无服务，探测失败不算崩——快照如实报告
+});
+
+test("readGatewayStatus：logTail 截断 + 非法代际 JSON 不致命", async () => {
+	const dir = tmpData();
+	mkdirSync(path.join(dir, "jevlike"), { recursive: true });
+	writeFileSync(path.join(dir, "jevlike", "gateway.json"), "{broken json");
+	const lines = Array.from({ length: 20 }, (_, i) => `log-${i + 1}`);
+	writeFileSync(path.join(dir, "jevlike", "gateway.log"), lines.join("\n"));
+	const s = await readGatewayStatus({ url: null, sidecar: null, dataDir: dir, logTail: 3 });
+	assert.equal(s.gen, null);
+	assert.deepEqual(s.log, ["log-18", "log-19", "log-20"]);
+	assert.equal(s.managed, false);
+});
