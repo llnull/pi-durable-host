@@ -766,6 +766,9 @@ async function cmdServe(args) {
 			judge: JUDGE,
 			screen: SCREEN,
 			routingAuto: envOr("PI_DURABLE_JUDGE_ROUTING", "routing") === "auto",
+			// jevlike 网关 sidecar（issue #110）：judge.url 指向本地网关时，由 daemon 托管其进程生命周期。
+			sidecarUrl: envOr("PI_DURABLE_JUDGE_URL", "url"),
+			sidecar: HOST_CONFIG.judge?.sidecar,
 		});
 	} catch (err) {
 		console.error("[serve] 启动失败:", err.message);
