@@ -5,7 +5,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { once } from "node:events";
@@ -209,4 +209,53 @@ test("readGatewayStatus：日志尾只取当前代（从最后一条拉起标记
 	writeFileSync(path.join(dir, "jevlike", "gateway.log"), lines.join("\n"));
 	const s = await readGatewayStatus({ url: null, sidecar: null, dataDir: dir });
 	assert.deepEqual(s.log, [lines[2], lines[3]]); // 旧代崩溃栈不惊扰当前状态
+});
+
+
+// ---- 换代健壮性（#113 面板实测暴露：代际 pid 已死 + SIGTERM 偶发未生效）----
+test("ensureJudgeSidecar：代际 pid 已死而端口在位 → 降级 unmanaged，不越权接管", async () => {
+	const port = await freePort();
+	const dataDir = tmpData();
+	const fixture = writeFixture(dataDir, port);
+	const sidecar = { command: process.execPath, args: [fixture] };
+	const first = await ensureJudgeSidecar({ url: `http://127.0.0.1:${port}`, dataDir, sidecar });
+	spawned.push(first?.child);
+	assert.ok(first?.child, "第一代应拉起");
+	// 篡改代际记录：argsHash 保持一致（确保走到复用分支），pid 换成必不存在的
+	const genFile = path.join(dataDir, "jevlike", "gateway.json");
+	const gen = JSON.parse(readFileSync(genFile, "utf8"));
+	writeFileSync(genFile, JSON.stringify({ ...gen, pid: 2147483646 }));
+	const second = await ensureJudgeSidecar({ url: `http://127.0.0.1:${port}`, dataDir, sidecar });
+	assert.equal(second?.unmanaged, true, "代际 pid 已死应降级 unmanaged");
+	assert.ok(!second?.child, "不应拉起新进程");
+	assert.equal(await probeGateway(`http://127.0.0.1:${port}`), true, "原网关不受干扰");
+});
+
+test("ensureJudgeSidecar：上一代拒收 SIGTERM → SIGKILL 升级，换代仍成功", async () => {
+	const port = await freePort();
+	const dataDir = tmpData();
+	const stubborn = path.join(dataDir, "stubborn-gateway.mjs");
+	writeFileSync(stubborn, `import http from "node:http";
+process.on("SIGTERM", () => {}); // 拒收 SIGTERM（模拟 python 卡 9p / 自装 TERM 处理器）
+http.createServer((req, res) => { res.writeHead(200); res.end("{}"); }).listen(${port}, "127.0.0.1");
+`);
+	const first = await ensureJudgeSidecar({
+		url: `http://127.0.0.1:${port}`,
+		dataDir,
+		sidecar: { command: process.execPath, args: [stubborn] },
+		readyMs: 4000,
+	});
+	assert.ok(first?.child, "第一代（拒收 TERM 的网关）应拉起");
+	spawned.push(first.child);
+	assert.equal(await probeGateway(`http://127.0.0.1:${port}`), true);
+	const second = await ensureJudgeSidecar({
+		url: `http://127.0.0.1:${port}`,
+		dataDir,
+		sidecar: { command: process.execPath, args: [stubborn, "gen2"] },
+		readyMs: 4000,
+	});
+	spawned.push(second?.child);
+	assert.ok(second?.child, "SIGKILL 升级后换代应拉起新进程");
+	assert.notEqual(second.child.pid, first.child.pid, "应是新 pid");
+	assert.ok(first.child.signalCode || first.child.exitCode !== null, "拒收 TERM 的旧进程应被 SIGKILL 收掉");
 });
