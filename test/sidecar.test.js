@@ -196,3 +196,17 @@ test("readGatewayStatus：logTail 截断 + 非法代际 JSON 不致命", async (
 	assert.deepEqual(s.log, ["log-18", "log-19", "log-20"]);
 	assert.equal(s.managed, false);
 });
+
+test("readGatewayStatus：日志尾只取当前代（从最后一条拉起标记起算）", async () => {
+	const dir = tmpData();
+	mkdirSync(path.join(dir, "jevlike"), { recursive: true });
+	const lines = [
+		"[sidecar] 2026-10-14T02:53:47.072Z daemon(pid 408) 拉起网关",
+		"旧代崩溃栈 EADDRINUSE",
+		"[sidecar] 2026-10-14T07:46:40.800Z daemon(pid 5460) 拉起网关",
+		"当前代就绪",
+	];
+	writeFileSync(path.join(dir, "jevlike", "gateway.log"), lines.join("\n"));
+	const s = await readGatewayStatus({ url: null, sidecar: null, dataDir: dir });
+	assert.deepEqual(s.log, [lines[2], lines[3]]); // 旧代崩溃栈不惊扰当前状态
+});
