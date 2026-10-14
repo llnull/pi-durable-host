@@ -66,7 +66,7 @@ test("ensureJudgeSidecar：命令立即退出 → exited 标记，不误报就�
 	const handle = await ensureJudgeSidecar({
 		url: "http://127.0.0.1:1",
 		dataDir,
-		sidecar: { command: "/bin/false", args: [] },
+		sidecar: { command: process.execPath, args: ["-e", "process.exit(1)"] },
 	});
 	spawned.push(handle?.child);
 	assert.ok(handle?.child, "应返回子进程句柄");
@@ -100,7 +100,7 @@ test("ensureJudgeSidecar：端口被无代际记录的进程占用 → 不越权
 		const handle = await ensureJudgeSidecar({
 			url: `http://127.0.0.1:${port}`,
 			dataDir: tmpData(),
-			sidecar: { command: "/bin/true", args: [] },
+			sidecar: { command: process.execPath, args: ["-e", ""] },
 		});
 		assert.equal(handle?.unmanaged, true, "无代际记录应标记 unmanaged");
 		assert.ok(!handle.child, "不应拉起新进程");
