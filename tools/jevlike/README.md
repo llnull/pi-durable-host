@@ -45,11 +45,9 @@ python3 -m venv ~/.venvs/jevlike
 cd tools/jevlike
 ~/.venvs/jevlike/bin/python gen-data.py data-host
 ~/.venvs/jevlike/bin/jevlike-train data-host/train.jsonl \
-  --validation data-host/val.jsonl --output ckpt.pt --epochs 25 --width 96 --rank 96
+  --validation data-host/val.jsonl --output ../../data/jevlike/host-v8.pt --epochs 25 --width 96 --rank 96
 
-# 3) 起服务（覆盖区前缀 → checkpoint；域外拒绝）
-~/.venvs/jevlike/bin/python server.py --port 7610 \
-  --ckpt "command:=ckpt.pt" --ckpt "content:=ckpt.pt" --ckpt "output:=ckpt.pt" --fallback reject
+# 3) 不需手动起服务：data/host.json 配好 judge.sidecar 后，daemon 自动拉起/托管（见下方生产拓扑）
 
 # 4) host 接上（host.js 环境）
 PI_DURABLE_JUDGE_URL=http://127.0.0.1:7610
@@ -67,33 +65,51 @@ guard 破坏性域因质量不足**建议保持 heuristic**（本地头对 guard
 - `gen-data.py` — 三个判断域的合成数据生成（模板组合 + 边界带 + held-out 切分；seed 固定 42/7，重建可复现）
 - `train.py` — 训练 + 真实调用形状复测脚本
 
-## 持久化（/tmp 是易失的）
+## 生产拓扑（本机实装）
 
-一切可再生的东西不要放 /tmp。PoC 期的持久件在 `~/jevlike-lab/`（ext4 原生，勿放 /mnt/d——9p 慢盘加载模型慢百倍）：
+代码、运行时状态、配置三分离，各自唯一真相源：
 
+| 角色 | 位置 | 说明 |
+|---|---|---|
+| 代码（canonical） | repo `tools/jevlike/` | 网关只从 repo 工作树跑（与 host.js 同一约定），改动走 PR |
+| 运行时状态 | `data/jevlike/` | checkpoint（host-v8.pt）、gateway.json 代际记录、gateway.log |
+| 配置 | `data/host.json` | judge.url/model + **judge.sidecar**（command/args/log/readyMs） |
+| PoC 存档 | `~/jevlike-lab/` | 评测脚本、历史 checkpoint、jevlike-src、GGUF——不再参与运行 |
+
+**生命周期由 daemon 托管**（本机 WSL2 无 systemd）：serve 启动时探测 judge url——健康且代际记录
+（argsHash）一致 → 复用（重启无间隙）；不健康或配置已变 → 停旧拉新（/proc cmdline 核对防误杀）；
+运行中每 60s 自愈探测，网关崩溃自动复活；daemon 停止不杀网关（无状态，留给下一个 daemon）。
+手拉网关（无代际记录）占着端口时 sidecar 不越权接管，日志提示人工处理。
+
+激活只需 `data/host.json`（无 sidecar 段则网关不受管，行为同旧版）：
+
+```json
+{
+  "judge": {
+    "url": "http://127.0.0.1:7610",
+    "model": "jevlike-local",
+    "sidecar": {
+      "command": "~/.venvs/jevlike/bin/python",
+      "args": ["<repo>/tools/jevlike/server.py", "--port", "7610",
+               "--ckpt", "command:=<repo>/data/jevlike/host-v8.pt",
+               "--ckpt", "content:=<repo>/data/jevlike/host-v8.pt",
+               "--ckpt", "output:=<repo>/data/jevlike/host-v8.pt",
+               "--fallback", "reject"]
+    }
+  },
+  "guard": { "mode": "block" }
+}
 ```
-~/jevlike-lab/
-├── runs/host-v8.pt        # 当前最优 checkpoint（287KB）
-├── data-host*/            # 已切分数据集（seed 固定，可用 gen-data.py 复现）
-├── jevlike-src/           # jevlike 源码 clone（pip install -e 用）
-├── models/                # llama.cpp 实验用 GGUF
-├── llamacpp-probes/       # llama.cpp 评测脚本（logit_bias 打分法）
-└── *.py                   # PoC 评测脚本（smoke/eval/baseline/verify）
-```
 
-venv 在 `~/.venvs/jevlike`（pip cache 持久，重建离线秒级）。
-**主机重启后恢复只需一条命令**：
+### 运维 runbook
 
-```sh
-cd ~/jevlike-lab && ~/.venvs/jevlike/bin/python server.py --port 7610 \
-  --ckpt "command:=runs/host-v8.pt" --ckpt "content:=runs/host-v8.pt" \
-  --ckpt "output:=runs/host-v8.pt" --fallback reject
-```
-
-（若 venv 也丢了：`python3 -m venv ~/.venvs/jevlike` + 重跑部署第 1 步，pip cache 命中即秒装。）
-
-注意 `--ckpt` 是 `前缀=路径` 且前缀须与训练 state 开头对齐（`command:` / `content:` / `output:`），
-写成域名（routing=/guard=）会静默全部走 fallback；Apple Silicon 上训练自动用 MPS，其余平台 CPU。
+| 症状 | 处置 |
+|---|---|
+| 网关响应慢/无响应 | `tail data/jevlike/gateway.log`；sidecar 60s 内自动复活，无需人工 |
+| 换 checkpoint/改参数 | 改 `host.json` sidecar.args → `POST /api/restart`；代际哈希变化自动停旧拉新 |
+| 端口被手拉进程占用 | sidecar 不越权接管：手动停旧进程后自愈即接管 |
+| venv 丢失 | `python3 -m venv ~/.venvs/jevlike` + 重跑部署第 1 步（pip cache 离线秒装） |
+| 数据/checkpoint 全丢 | `gen-data.py`（seed 42/7）+ `jevlike-train` 可复现；lab 存档还有历史版本 |
 
 ## 限制
 
