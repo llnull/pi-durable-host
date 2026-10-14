@@ -1454,18 +1454,19 @@ async function refreshJe() {
   panel.style.display = "";
   const gen = s.gen;
   let state, color = "var(--ok, #1a7f37)";
-  if (s.alive && gen) state = `运行中 · pid ${gen.pid}`;
-  else if (s.alive) { state = "在位（非托管）"; color = "var(--amber)"; }
+  if (s.alive && s.managed) state = `运行中 · pid ${gen.pid}`;
+  else if (s.alive) { state = gen ? `在位（非托管，记录 pid ${gen.pid} 已死）` : "在位（非托管）"; color = "var(--amber)"; }
   else if (gen) { state = `无响应（记录 pid ${gen.pid}）`; color = "var(--amber)"; }
   else { state = "未运行"; color = "var(--amber)"; }
-  const up = gen?.startedAt ? fmtUptime(Date.now() - new Date(gen.startedAt).getTime()) : "";
+  // 运行时长只在代际 pid 确认存活时才有意义（#113：死记录起算的 uptime 是谎话）
+  const up = s.managed && gen?.startedAt ? fmtUptime(Date.now() - new Date(gen.startedAt).getTime()) : "";
   const rows = [];
   rows.push(`<div class="kv"><b style="color:${color}">●</b> <b>${esc(state)}</b>${up ? ` · 已运行 ${esc(up)}` : ""}${s.configured ? "" : ` · <span class="muted">未配 sidecar</span>`}</div>`);
   if (gen?.argsHash) rows.push(`<div class="kv">代际 <code class="md-inline">${esc(gen.argsHash)}</code>${gen.startedAt ? ` · ${new Date(gen.startedAt).toLocaleTimeString()}` : ""}</div>`);
   for (const c of s.ckpts ?? []) rows.push(`<div class="kv">ckpt <b>${esc(c.file)}</b> · ${(c.bytes / 1024).toFixed(0)}KB · ${new Date(c.mtime).toLocaleString()}</div>`);
   if (s.log?.length) rows.push(`<pre class="jev-log">${esc(s.log.slice(-4).join("\n"))}</pre>`);
   $("jevBody").innerHTML = rows.join("");
-  setPanelBadge("jevPanel", s.alive ? 0 : 1);
+  setPanelBadge("jevPanel", s.alive && s.managed ? 0 : 1);
 }
 refreshJe(); setInterval(refreshJe, 10000);
 
