@@ -275,7 +275,19 @@ def main():
         prefix, _, path = spec.partition("=")
         MODELS[prefix] = load_checkpoint(path, DEVICE)
         print(f"[jevlike-server] {prefix!r} → {path}", file=sys.stderr)
-    srv = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+
+    class Server(ThreadingHTTPServer):
+        daemon_threads = True
+
+        def handle_error(self, request, client_address):
+            # 客户端断开（超时取消/进程被杀）不是服务错误：任何线程里冒出的
+            # BrokenPipe/ConnectionReset 都静默；其余异常才走默认打栈（真问题不掩盖）。
+            exc = sys.exc_info()[1]
+            if isinstance(exc, (BrokenPipeError, ConnectionResetError)):
+                return
+            super().handle_error(request, client_address)
+
+    srv = Server(("127.0.0.1", args.port), Handler)
     print(f"[jevlike-server] http://127.0.0.1:{args.port}/v1/systemone", file=sys.stderr)
     srv.serve_forever()
 
