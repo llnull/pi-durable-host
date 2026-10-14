@@ -206,6 +206,15 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):  # 安静
         pass
 
+    def handle_one_request(self):
+        # 客户端中途断开（超时取消、进程被杀）不是服务错误：BrokenPipe/ConnectionReset
+        # 静默吞掉，否则 http.server 每次客户端断开都往 stderr 打整段 traceback，
+        # 把网关面板日志尾染成一屏“error”（实测 issue #121）。
+        try:
+            super().handle_one_request()
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True
+
     def do_POST(self):
         if not self.path.endswith("/v1/systemone"):
             self.send_error(404)
