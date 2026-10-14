@@ -2,3 +2,4 @@
 tools/jevlike/data-*/
 tools/jevlike/*.pt
 tools/jevlike/ckpt.pt
+tools/jevlike/__pycache__/
