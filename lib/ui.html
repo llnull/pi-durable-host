@@ -257,7 +257,7 @@
   #filesBody .kv { margin: 3px 0; }
   /* 侧栏面板体统一限高内滚：长内容不撑爆侧栏，也不被面板压扁裁剪（issue #85）。
      分档：实时/审批内容密度高给 40vh；用量/体检/护栏 26vh；其余 32vh。面板间滚动由 .side 承担。 */
-  #liveBody, #inboxBody, #approvalBody, #usageBody, #judgeBody, #screenBody, #jevBody, #tasksBody, #filesBody {
+  #liveBody, #inboxBody, #approvalBody, #usageBody, #judgeBody, #screenBody, #jevBody, #outlineBody, #tasksBody, #filesBody {
     max-height: 32vh; overflow-y: auto; overscroll-behavior: contain;
     scrollbar-width: thin; scrollbar-color: var(--line) transparent;
   }
@@ -265,6 +265,23 @@
   #usageBody, #judgeBody, #screenBody, #jevBody { max-height: 26vh; }
   .jev-log { margin: 4px 0 0; font-size: 11px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; color: var(--faint); font-family: var(--mono, monospace); }
   .judge-badge { font-size: 11px; font-weight: 700; border-radius: 5px; padding: 0 6px; white-space: nowrap; }
+  .judge-badge.warn { cursor: pointer; }
+
+  /* 对话大纲（issue #117）：run 级导航——点行跳转、⑂ 直接分叉、⚠ 出错标记 */
+  .outline-row { display: flex; align-items: center; gap: 6px; padding: 3px 6px; border-radius: 6px; cursor: pointer; font-size: 12px; line-height: 1.5; }
+  .outline-row:hover, .outline-row.act { background: var(--accent-soft); }
+  .outline-row .onum { color: var(--faint); font: 11px var(--mono); flex: none; min-width: 28px; text-align: right; }
+  .outline-row .otext { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .outline-row .ometa { color: var(--faint); font-size: 11px; flex: none; }
+  .outline-row .obadge { flex: none; color: var(--amber); font-weight: 700; font-size: 11px; }
+  .outline-row .ofork { flex: none; border: none; background: none; color: var(--faint); cursor: pointer; padding: 1px 4px; border-radius: 4px; font-size: 13px; }
+  .outline-row .ofork:hover { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+
+  /* 跳转落点高亮（issue #117） */
+  .flash { animation: flashPulse 1.8s ease; }
+  @keyframes flashPulse { 0%, 55% { box-shadow: 0 0 0 3px var(--accent); border-radius: 8px; } 100% { box-shadow: none; } }
+  .jumpable { cursor: pointer; }
+  .jumpable:hover { text-decoration: underline; }
   .judge-badge.warn { color: var(--amber); background: var(--amber-bg); cursor: help; }
   .judge-badge.ok { color: #0b7a3e; background: #e6f6ec; cursor: help; }
 </style>
@@ -291,6 +308,7 @@
 <div class="toolbar">
   <input type="search" id="search" placeholder="搜索对话内容…（过滤轮次并自动展开）">
   <span class="chip on" data-filter="all">全部</span>
+  <span class="chip" data-filter="errors">出错</span>
   <span class="chip" data-filter="tools">含工具调用</span>
   <span class="chip" data-filter="steer">转向</span>
   <button class="mini" id="btnToggleAll" disabled title="展开/收起全部对话轮次">全部展开</button>
@@ -301,6 +319,9 @@
 <div class="layout">
   <main class="panel" id="transcript"><div class="muted">（加载中…）</div></main>
   <aside class="side">
+    <div class="panel" id="outlinePanel" style="display:none">
+      <h3>对话大纲</h3><div id="outlineBody" class="muted">…</div>
+    </div>
     <div class="panel" id="livePanel" style="display:none">
       <h3>实时运行</h3><div id="liveBody"></div>
     </div>
@@ -528,6 +549,7 @@ function groupRuns(entries) {
     g.answer = final ? textBlocks(final.model?.[0]?.content) : "";
     g.turns = g.entries.filter((e) => e.kind === "pi.assistant").length;
     g.tools = g.entries.filter((e) => e.kind === "pi.tool-result").length;
+    g.errors = g.entries.filter((e) => e.kind === "pi.tool-result" && e.model?.[0]?.isError).length;
   }
   return groups;
 }
@@ -549,7 +571,7 @@ function toolCardHtml(call, resultEntry, liveTool) {
   if (output) body += `<pre class="code">${esc(output.length > 2000 ? "…\n" + output.slice(-2000) : output)}</pre>`;
   const diag = resultEntry?.data?.diagnostics ?? liveTool?.diagnostics ?? [];
   for (const d of diag) if (d.message) body += `<div class="muted">⚠ ${esc(d.message)}</div>`;
-  return `<div class="tool-card ${status}"><details open>
+  return `<div class="tool-card ${status}"${resultEntry ? ` data-entry="${esc(String(resultEntry.id))}"` : ""}><details open>
     <summary class="tc-head"><span class="tc-name">🛠 ${esc(call.name)}</span><span class="tc-status">${label}${dur != null ? ` · ${dur}ms` : ""}</span></summary>
     <div class="tc-body">${body}</div></details></div>`;
 }
@@ -678,7 +700,7 @@ function runHeadHtml(g, runNo, isOpen, busy) {
   if (cu) {
     if (cu.flags?.length) {
       const detail = `${cu.flags.join("、")}（工具 ${cu.tools ?? 0} 次/错 ${cu.toolErrors ?? 0}）${cu.settlement ? "。结算单已附在本轮详情末尾" : ""}`;
-      judgeBadge = `<span class="judge-badge warn" title="run 体检：${esc(detail)}。可悬停本轮首条提问用 ⑂ 分叉重试">⚠ ${esc(cu.flags[0].split(":")[0])}${cu.flags.length > 1 ? "+" + (cu.flags.length - 1) : ""}</span>`;
+      judgeBadge = `<span class="judge-badge warn jump-err" title="run 体检：${esc(detail)}。点击定位到第一个出错工具；可悬停本轮首条提问用 ⑂ 分叉重试">⚠ ${esc(cu.flags[0].split(":")[0])}${cu.flags.length > 1 ? "+" + (cu.flags.length - 1) : ""}</span>`;
     } else if (cu.health != null) {
       judgeBadge = `<span class="judge-badge ok" title="run 体检：健康分 ${cu.health}${cu.healthProvider ? "（" + esc(cu.healthProvider) + "）" : ""}">✓</span>`;
     }
@@ -798,7 +820,7 @@ function render(view) {
         rec.hay = (g.prompt + " " + g.entries.map(flatText).join(" ")).toLowerCase();
       }
       // 搜索/过滤：只切 display，不重建
-      const visible = (!q || (rec.hay ?? "").includes(q)) && !((filterMode === "tools" && g.tools === 0) || (filterMode === "steer" && !g.steer));
+      const visible = (!q || (rec.hay ?? "").includes(q)) && !((filterMode === "tools" && g.tools === 0) || (filterMode === "steer" && !g.steer) || (filterMode === "errors" && !g.errors));
       rec.el.style.display = visible ? "" : "none";
       if (visible) anyVisible = true;
     }
@@ -888,7 +910,8 @@ function render(view) {
         const mark = c.flags?.length ? "⚠" : "✓";
         const what = c.flags?.length ? esc(c.flags.join("、")) : `健康分 ${c.health ?? "?"}${c.healthProvider ? "（" + esc(c.healthProvider) + "）" : ""}`;
         const t = c.at ? new Date(c.at).toLocaleTimeString() : "";
-        return `<div class="kv">${mark} <b>#${esc(String(c.runFirstId))}</b> · ${esc(what)} · ${esc(t)}（工具 ${c.tools ?? 0}/错 ${c.toolErrors ?? 0}）</div>`;
+        const jump = c.flags?.length ? ` class="jumpable" data-jump-run="${esc(String(c.runFirstId))}" title="点击定位到本轮出错处"` : "";
+        return `<div class="kv"${jump}>${mark} <b>#${esc(String(c.runFirstId))}</b> · ${esc(what)} · ${esc(t)}（工具 ${c.tools ?? 0}/错 ${c.toolErrors ?? 0}）</div>`;
       }).join("");
     setPanelBadge("judgePanel", bad);
   } else jp.style.display = "none";
@@ -909,6 +932,26 @@ function render(view) {
       }).join("");
     setPanelBadge("screenPanel", hits);
   } else sp.style.display = "none";
+
+  // 侧栏：对话大纲（issue #117）——run 级导航，长对话不用翻滚动找 fork 点
+  const op = $("outlinePanel");
+  if (runGroups.length) {
+    op.style.display = "";
+    const osig = runGroups.map((g) => `${g.firstId}:${g.tools}:${g.errors}:${judgeCheckups.get(String(g.firstId))?.flags?.length ?? 0}`).join("|");
+    if (op.dataset.sig !== osig) {
+      op.dataset.sig = osig;
+      $("outlineBody").innerHTML = runGroups.map((g, i) => {
+        const cu = judgeCheckups.get(String(g.firstId));
+        const flagTip = cu?.flags?.length ? cu.flags.join("、") : "有工具报错";
+        const warn = (g.errors > 0 || cu?.flags?.length)
+          ? `<span class="obadge" title="${esc(flagTip)}——点击本行可跳到出错处">⚠${g.errors ? esc(String(g.errors)) : ""}</span>`
+          : "";
+        const meta = [g.tools ? `${g.tools}工具` : null, g.errors ? `${g.errors}错` : null, g.time].filter(Boolean).join("/");
+        const text = stripMd(g.prompt).slice(0, 26) || "(无文本)";
+        return `<div class="outline-row" data-first="${String(g.firstId)}" title="${esc(stripMd(g.prompt))}\n点击定位本轮；⑂ 从本轮首条提问分叉重试"><span class="onum">#${i + 1}</span>${warn}<span class="otext">${esc(text)}</span><span class="ometa">${esc(meta)}</span><button class="ofork" data-fork="${String(g.firstId)}" title="从此提问分叉新会话（上下文复制到此处，可换指令重试）">⑂</button></div>`;
+      }).join("");
+    }
+  } else { op.style.display = "none"; op.dataset.sig = ""; }
 }
 
 // ---------- 交互 ----------
@@ -949,11 +992,69 @@ $("transcript").addEventListener("click", async (ev) => {
   }
   const head = ev.target.closest(".run-head");
   if (!head) return;
+  // ⚠ 体检徽标点击 → 定位到本轮第一个出错工具（不触发折叠）
+  if (ev.target.closest(".judge-badge.warn")) { jumpToRun(head.dataset.first, { toError: true }); return; }
   const first = head.dataset.first;
   expanded.has(first) ? expanded.delete(first) : expanded.add(first);
   rerender(); // 增量渲染：只重建该 run，历史 run 稳定不动
 });
 function rerender() { if (lastView) render(lastView); }
+
+// ---------- 定位与跳转（issue #117）----------
+// 展开（必要时）并滚动到目标 run；toError 时优先滚到第一个出错工具卡并闪烁高亮
+function jumpToRun(firstId, { toError = false } = {}) {
+  const key = String(firstId);
+  if (filterMode !== "all") {
+    filterMode = "all";
+    document.querySelectorAll(".chip").forEach((c) => c.classList.toggle("on", c.dataset.filter === "all"));
+  }
+  if ($("search").value.trim()) $("search").value = ""; // 搜索过滤可能把目标轮次藏掉
+  expanded.add(key);
+  rerender();
+  requestAnimationFrame(() => {
+    const el = runEls.get(key)?.el;
+    if (!el) return;
+    const target = toError ? el.querySelector(".tool-card.err") : null;
+    const node = target ?? el;
+    node.scrollIntoView({ behavior: "smooth", block: toError ? "center" : "start" });
+    node.classList.remove("flash");
+    void node.offsetWidth; // 重启动画
+    node.classList.add("flash");
+    setTimeout(() => node.classList.remove("flash"), 1900);
+  });
+}
+function doFork(entryId) {
+  if (!confirm("从此提问分叉新会话？新会话复制到此处为止的上下文，当前会话不变。")) return;
+  api("/api/fork", { method: "POST", body: JSON.stringify({ entryId }) })
+    .then((r) => { expanded.clear(); hasRendered = false; toast(`已分叉并切换到 ${r.session}`, "ok"); })
+    .catch((err) => toast("分叉失败：" + err.message));
+}
+$("outlineBody").addEventListener("click", (ev) => {
+  const forkBtn = ev.target.closest(".ofork");
+  if (forkBtn) { doFork(forkBtn.dataset.fork); return; }
+  const row = ev.target.closest(".outline-row");
+  if (row?.dataset.first) jumpToRun(row.dataset.first, { toError: row.querySelector(".obadge") != null });
+});
+// 体检面板 ⚠ 行 → 跳到对应 run 的出错处
+$("judgeBody").addEventListener("click", (ev) => {
+  const row = ev.target.closest("[data-jump-run]");
+  if (row?.dataset.jumpRun) jumpToRun(row.dataset.jumpRun, { toError: true });
+});
+// 大纲高亮跟随滚动：最近一个滚过视窗顶部的 run
+let outlineTick = 0;
+$("transcript").addEventListener("scroll", () => {
+  const now = Date.now();
+  if (now - outlineTick < 150 || $("outlinePanel").style.display === "none") return;
+  outlineTick = now;
+  const top = $("transcript").getBoundingClientRect().top + 60;
+  let cur = null;
+  for (const h of document.querySelectorAll("#transcript .run-head")) {
+    if (h.getBoundingClientRect().top <= top) cur = h.dataset.first;
+  }
+  for (const r of document.querySelectorAll("#outlineBody .outline-row")) {
+    r.classList.toggle("act", r.dataset.first === cur);
+  }
+}, { passive: true });
 let lastView = null;
 
 document.querySelectorAll(".chip").forEach((chip) => {
