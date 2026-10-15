@@ -1581,6 +1581,18 @@ async function refreshJe() {
       rows.push(`<div class="kv muted">自适应：样本不足（${s.tuning.samples}），换代时自动采集</div>`);
     }
   }
+  // 晋升提案（issue #130）：过门候选等人批；应用后显示已换代状态
+  if (s.promotion) {
+    const r = s.promotion;
+    const d = r.decision ?? {};
+    rows.push(`<div class="kv">🏆 <b>晋升提案</b>（${esc(r.at ? new Date(r.at).toLocaleString() : "")} · real ×${r.weight ?? 2}）</div>`);
+    const ch = r.report?.champion, cd = r.report?.challenger;
+    if (ch && cd) {
+      rows.push(`<div class="kv">合成 ${ch.accuracy}→<b>${cd.accuracy}</b> · guard ${ch.domains?.guard}→<b>${cd.domains?.guard}</b> · 真实 ${ch.real?.accuracy}→<b>${cd.real?.accuracy}</b>${r.report?.probes ? ` · 探针 ${r.report.probes.filter((p) => p.ok).length}/${r.report.probes.length}` : ""}</div>`);
+    }
+    if (promotionApplied) rows.push(`<div class="kv"><span style="color:var(--ok,#1a7f37)">已写入 host.json，重启换代生效</span></div>`);
+    else rows.push(`<div class="kv"><button class="promo-apply" data-promo="1" title="服务端会重算门判定；候选拷贝为不可变晋升名后改 host.json，下次重启换代。回滚 = 改回旧 ckpt 路径">应用换代</button> <span class="muted">门判定已过，等你拍板</span></div>`);
+  }
   if (s.log?.length) rows.push(`<pre class="jev-log">${esc(s.log.slice(-4).join("\n"))}</pre>`);
   $("jevBody").innerHTML = rows.join("");
   setPanelBadge("jevPanel", s.alive && s.managed ? 0 : 1);
@@ -1588,17 +1600,32 @@ async function refreshJe() {
 refreshJe(); setInterval(refreshJe, 10000);
 // 调参应用（issue #124）：会话内已应用的键不再重复请求；写入后 toast 提示重启生效
 let tuningApplied = null;
+let promotionApplied = null;
 $("jevBody").addEventListener("click", async (ev) => {
   const btn = ev.target.closest(".tune-apply");
-  if (!btn) return;
-  btn.disabled = true;
-  try {
-    const r = await api("/api/jev/tuning/apply", { method: "POST", body: JSON.stringify({ key: btn.dataset.tune }) });
-    tuningApplied = tuningApplied ?? {};
-    tuningApplied[r.key] = true;
-    toast(`${r.key} → ${r.proposed}ms 已写入 host.json，重启 daemon 后换代生效`, "ok");
-  } catch (err) { toast("应用失败：" + err.message); btn.disabled = false; }
-  refreshJe();
+  if (btn) {
+    btn.disabled = true;
+    try {
+      const r = await api("/api/jev/tuning/apply", { method: "POST", body: JSON.stringify({ key: btn.dataset.tune }) });
+      tuningApplied = tuningApplied ?? {};
+      tuningApplied[r.key] = true;
+      toast(`${r.key} → ${r.proposed}ms 已写入 host.json，重启 daemon 后换代生效`, "ok");
+    } catch (err) { toast("应用失败：" + err.message); btn.disabled = false; }
+    refreshJe();
+    return;
+  }
+  // 晋升提案应用（issue #130）：服务端重算门判定后才写 host.json
+  const promo = ev.target.closest(".promo-apply");
+  if (promo) {
+    if (!confirm("确认换代到提案候选？服务端会重算门判定；下次重启后网关换用新 ckpt。")) return;
+    promo.disabled = true;
+    try {
+      const r = await api("/api/jev/promotion/apply", { method: "POST", body: "{}" });
+      promotionApplied = true;
+      toast(`已换代为 ${r.promotedAs}，重启 daemon 后生效`, "ok");
+    } catch (err) { toast("应用失败：" + err.message); promo.disabled = false; }
+    refreshJe();
+  }
 });
 
 refreshApprovals(); loadSessions(); loadModels(); loadCommands();
