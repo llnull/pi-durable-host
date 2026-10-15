@@ -1,7 +1,7 @@
 // judge 子系统测试（issue #77：官方 System One 契约 + 批量 API）。
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, existsSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, existsSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import http from "node:http";
@@ -134,4 +134,80 @@ test("无配置无日志路径：audit 静默", async () => {
 	const judge = createJudge({});
 	const v = await judge.choice("忙时路由？", ["followUp", "steer"], { content: "不要重试" });
 	assert.ok(v);
+});
+
+// ---------- 审计留痕与轮转（issue #124 Phase 0） ----------
+test("审计：对象 state 序列化留存（不再 \"(object)\"），字符串截断 500", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "judge-log-test-"));
+	try {
+		const log = join(dir, "judge-log.jsonl");
+		initJudgeLog(log);
+		const judge = createJudge({});
+		await judge.batch({ danger: { type: "noul", instructions: "这条 bash 命令有破坏性吗？" } }, { command: "git status", extra: { nested: true } });
+		await judge.batch({ q: { type: "noul", instructions: "x" } }, "s".repeat(1200));
+		const lines = readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+		const objRec = lines.find((l) => l.state?.includes("git status"));
+		assert.ok(objRec, "对象 state 应序列化落盘");
+		assert.ok(objRec.state.includes("nested"), "嵌套结构保留");
+		const strRec = lines.find((l) => typeof l.state === "string" && l.state.startsWith("sss"));
+		assert.ok(strRec && strRec.state.length === 500, "字符串 state 截断 500");
+	} finally {
+		initJudgeLog(null);
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("审计：域外拒答落 rejected 记录，部分缺席落 absent", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "judge-log-test-"));
+	try {
+		const log = join(dir, "judge-log.jsonl");
+		initJudgeLog(log);
+		const judge = createJudge({});
+		// heuristic 只覆盖 bash 破坏性问题——无 url 时 choice/无关问题全部缺席 → rejected
+		await judge.batch({ pick: { type: "choice", instructions: "选一个", criteria: ["a", "b"] } }, { content: "x" });
+		await judge.batch({
+			danger: { type: "noul", instructions: "这条 bash 命令有破坏性吗？" },
+			gap: { type: "noul", instructions: "完全无关的问题" },
+		}, { command: "git status" });
+		const lines = readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+		const rej = lines.find((l) => l.rejected === true);
+		assert.ok(rej, "全缺席应落 rejected 记录");
+		assert.deepEqual(rej.answers, {});
+		const part = lines.find((l) => Array.isArray(l.absent) && l.absent.includes("gap"));
+		assert.ok(part, "部分缺席应落 absent");
+		assert.deepEqual(part.absent, ["gap"]);
+		assert.ok(part.answers.danger, "已答问题正常留存");
+	} finally {
+		initJudgeLog(null);
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("审计：超限轮转——当前文件换新，旧代保留，超 keep 删除", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "judge-log-test-"));
+	try {
+		const log = join(dir, "judge-log.jsonl");
+		initJudgeLog(log, { rotateBytes: 300, rotateKeep: 2 });
+		const judge = createJudge({});
+		for (let i = 0; i < 12; i++) {
+			await judge.batch({ danger: { type: "noul", instructions: "这条 bash 命令有破坏性吗？" } }, { command: "git status", pad: "x".repeat(60) });
+		}
+		// 12 条 × ~200B ≈ 2.4KB，500 条才探一次轮转 → 这里直接手动触发验证轮转逻辑
+		const { statSync } = await import("node:fs");
+		const before = statSync(log).size;
+		assert.ok(before > 300, "已超测试阈值");
+		// 触发：再写 500 条让它到探点
+		for (let i = 0; i < 500; i++) {
+			await judge.batch({ danger: { type: "noul", instructions: "这条 bash 命令有破坏性吗？" } }, { command: "git status" });
+		}
+		const rotated = readdirSync(dir).filter((f) => f.startsWith("judge-log-") && f.endsWith(".jsonl"));
+		assert.ok(rotated.length >= 1, "应产生轮转文件");
+		assert.ok(rotated.length <= 2, "keep=2 上限");
+		assert.ok(existsSync(log), "当前文件应存在且为新一代");
+		const curSize = statSync(log).size;
+		assert.ok(curSize < before, "轮转后当前文件应重置");
+	} finally {
+		initJudgeLog(null);
+		rmSync(dir, { recursive: true, force: true });
+	}
 });
