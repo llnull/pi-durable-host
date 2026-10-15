@@ -264,6 +264,9 @@
   #liveBody, #approvalBody { max-height: 40vh; }
   #usageBody, #judgeBody, #screenBody, #jevBody { max-height: 26vh; }
   .jev-log { margin: 4px 0 0; font-size: 11px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; color: var(--faint); font-family: var(--mono, monospace); }
+  .tune-apply { border: 1px solid var(--accent); background: none; color: var(--accent); cursor: pointer; padding: 1px 8px; border-radius: 5px; font-size: 11px; margin-left: 4px; }
+  .tune-apply:hover { background: var(--accent-soft); }
+  .tune-apply:disabled { opacity: 0.5; cursor: wait; }
   .judge-badge { font-size: 11px; font-weight: 700; border-radius: 5px; padding: 0 6px; white-space: nowrap; }
   .judge-badge.warn { cursor: pointer; }
 
@@ -1565,11 +1568,38 @@ async function refreshJe() {
   rows.push(`<div class="kv"><b style="color:${color}">●</b> <b>${esc(state)}</b>${up ? ` · 已运行 ${esc(up)}` : ""}${s.configured ? "" : ` · <span class="muted">未配 sidecar</span>`}</div>`);
   if (gen?.argsHash) rows.push(`<div class="kv">代际 <code class="md-inline">${esc(gen.argsHash)}</code>${gen.startedAt ? ` · ${new Date(gen.startedAt).toLocaleTimeString()}` : ""}</div>`);
   for (const c of s.ckpts ?? []) rows.push(`<div class="kv">ckpt <b>${esc(c.file)}</b> · ${(c.bytes / 1024).toFixed(0)}KB · ${new Date(c.mtime).toLocaleString()}</div>`);
+  // 换代耗时自适应（issue #124）：证据化建议 + 人批应用；样本不足时只显计数不喍噪
+  if (s.tuning) {
+    const applied = tuningApplied ?? {};
+    if (s.tuning.recs?.length) {
+      rows.push(`<div class="kv muted">自适应（${s.tuning.samples} 样本）：建议（只升不降）</div>`);
+      for (const r of s.tuning.recs) {
+        if (applied[r.key]) { rows.push(`<div class="kv">自适应 <b>${esc(r.key)}</b> → ${r.proposed}ms <span style="color:var(--ok,#1a7f37)">已写入，重启生效</span></div>`); continue; }
+        rows.push(`<div class="kv">自适应 <b>${esc(r.key)}</b> ${r.current}→<b>${r.proposed}</b>ms <button class="tune-apply" data-tune="${esc(r.key)}" title="${esc(r.evidence.join("；"))}\n写入 host.json，下次重启后换代生效">应用</button></div>`);
+      }
+    } else {
+      rows.push(`<div class="kv muted">自适应：样本不足（${s.tuning.samples}），换代时自动采集</div>`);
+    }
+  }
   if (s.log?.length) rows.push(`<pre class="jev-log">${esc(s.log.slice(-4).join("\n"))}</pre>`);
   $("jevBody").innerHTML = rows.join("");
   setPanelBadge("jevPanel", s.alive && s.managed ? 0 : 1);
 }
 refreshJe(); setInterval(refreshJe, 10000);
+// 调参应用（issue #124）：会话内已应用的键不再重复请求；写入后 toast 提示重启生效
+let tuningApplied = null;
+$("jevBody").addEventListener("click", async (ev) => {
+  const btn = ev.target.closest(".tune-apply");
+  if (!btn) return;
+  btn.disabled = true;
+  try {
+    const r = await api("/api/jev/tuning/apply", { method: "POST", body: JSON.stringify({ key: btn.dataset.tune }) });
+    tuningApplied = tuningApplied ?? {};
+    tuningApplied[r.key] = true;
+    toast(`${r.key} → ${r.proposed}ms 已写入 host.json，重启 daemon 后换代生效`, "ok");
+  } catch (err) { toast("应用失败：" + err.message); btn.disabled = false; }
+  refreshJe();
+});
 
 refreshApprovals(); loadSessions(); loadModels(); loadCommands();
 
