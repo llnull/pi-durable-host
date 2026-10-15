@@ -33,6 +33,7 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { acquireLock, releaseLock } from "./lib/lock.js";
+import { buildDataset } from "./lib/dataset.js";
 import { buildGuard, buildProjectContext, buildScreen, SubagentExtension } from "./lib/extensions.js";
 import { createJudge } from "./lib/judge.js";
 import { openModelLayer } from "./lib/models.js";
@@ -644,6 +645,18 @@ async function cmdBackup(file) {
 	console.log("backup:", await backupStorageFile(DATA_FILE, file));
 }
 
+async function cmdDataset() {
+	// 真实分布标注集（issue #128 Phase 1）：transcript 真实结果 → guard 标签 → data/jevlike/real-guard.jsonl
+	const { file, written, stats, judgeLogAnswers } = buildDataset({ dataDir: DATA_DIR });
+	console.log(`扫描 ${stats.entries} 条目 / ${stats.bashCalls} 条 bash 调用：`);
+	console.log(`  拦截（destructive=1）: ${stats.blocked}`);
+	console.log(`  只读成功（safe=0）:   ${stats.readonlyOk}`);
+	console.log(`  无标签跳过: ${stats.skipped} · 重复去重: ${stats.dup}`);
+	console.log(`judge-log 应答量级（参考，非标签）: ${judgeLogAnswers}`);
+	console.log(`写出 ${written} 条 → ${file}`);
+	if (stats.blocked === 0) console.log("（无拦截样本：guard 还没在真实会话里拦过东西，或拦截在轮转前的会话里）");
+}
+
 async function cmdTiming(limit = 10) {
 	if (!existsSync(TIMING_LOG)) {
 		console.log(`(no ${TIMING_LOG} — tool timing appears after serve runs tools)`);
@@ -792,6 +805,7 @@ const commands = {
 	approve: () => cmdApprove(rest[0] === "--" ? rest.slice(1) : rest),
 	backup: () => cmdBackup(rest.find((a) => !a.startsWith("-"))),
 	timing: () => cmdTiming(Number(rest[0] ?? 10) || 10),
+	dataset: () => cmdDataset(),
 	restart: () => cmdRestart(),
 	serve: () => cmdServe(rest),
 };
