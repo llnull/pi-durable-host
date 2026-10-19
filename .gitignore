@@ -5,5 +5,7 @@ workspace/
 # 个人分析报告（含本地环境信息），不入库
 pi-durable-report.html
 node_modules/
+# Python 工具（tools/jevlike）的 .pyc 编译产物
+__pycache__/
 *.log
 .DS_Store
