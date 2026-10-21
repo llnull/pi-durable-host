@@ -136,7 +136,7 @@ node host.js config                              # 重置存储的 cwd/model 为
 | `POST /api/wait-idle` | `{ timeoutMs?, session? }` 等会话空闲（外部自动化动作前的一致性保证）；超时 `{ idle: false }` |
 | `POST /api/approve` / `/api/approve/revoke` / `/api/approvals/dismiss` | 审批管理 |
 | `POST /api/backup` / `POST /api/restart` | 在线备份 / 热重启 |
-| `GET /api/state[?light=1]` | 全量快照（light 仅元数据，1.2KB 级）；`GET /api/events` SSE 增量推送 |
+| `GET /api/state[?light=1]` | 全量快照（light 仅元数据，1.2KB 级；全量的 image 块与 SSE 帧同为瘦身引用，原图走 `GET /api/entry-image`）；`GET /api/events` SSE 增量推送 |
 | `GET /api/history` / `/api/entry?id=` / `/api/submission?id=` | transcript 与提交记录 |
 | `GET /api/context?entryId=n` | 该条目处的模型上下文（消息摘要，防倾倒） |
 | `GET /api/judge/log` / `GET /api/judge/checkups` | judge 判断审计尾览 / run 体检记录 |
