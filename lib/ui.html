@@ -168,9 +168,11 @@
   .tool-card.ok .tc-status { color: var(--green); }
   .tool-card.running .tc-status { color: var(--amber); }
   .tool-card .tc-body { border-top: 1px solid var(--line); padding: 6px 12px; }
-  /* image block 渲染（issue #134）：read 图片返回的 base64 块，限高预览 + 点击切原尺寸 */
+  /* image block 渲染（issue #134）：read 图片返回的 base64 块，限高预览；点击灯箱全屏放大（issue #144） */
   .tool-img { display: block; max-width: 100%; max-height: 320px; border: 1px solid var(--line); border-radius: 8px; margin: 6px 0; cursor: zoom-in; }
-  .tool-img.zoom { max-height: none; cursor: zoom-out; }
+  #lightbox { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.82); display: flex; align-items: center; justify-content: center; z-index: 999; cursor: zoom-out; }
+  #lightbox img { max-width: 96vw; max-height: 96vh; min-width: 60vmin; min-height: 60vmin; object-fit: contain; border-radius: 4px; box-shadow: 0 8px 60px rgba(0, 0, 0, 0.6); }
+  #lightbox .lb-tip { position: fixed; bottom: 14px; left: 0; right: 0; text-align: center; color: #fff9; font-size: 12px; pointer-events: none; }
   .user-imgs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
   .user-imgs .tool-img { margin: 0; max-height: 220px; }
   .syschip { font-size: 12px; color: var(--faint); margin: 6px 0; }
@@ -429,6 +431,21 @@ let hasRendered = false;
 let followBottom = true;      // 视图跟随：内容更新时自动滚到最新（用户上翻阅读时自动关闭）
 
 let toastTimer;
+// 图片灯箱（issue #144）：点击全屏放大，再点/ESC 还原。单例 DOM，关闭时移除。
+function openLightbox(src, tip = "") {
+  closeLightbox();
+  const lb = document.createElement("div");
+  lb.id = "lightbox";
+  lb.innerHTML = `<img src="${esc(src)}" alt=""><div class="lb-tip">${esc(tip)} · 点击任意处或 Esc 还原</div>`;
+  lb.addEventListener("click", closeLightbox, { once: true });
+  document.body.appendChild(lb);
+  document.addEventListener("keydown", closeLightbox, { once: true });
+}
+function closeLightbox() {
+  document.getElementById("lightbox")?.remove();
+  document.removeEventListener("keydown", closeLightbox);
+}
+
 function toast(msg, kind = "err") {
   const t = $("toast");
   t.textContent = msg;
@@ -600,7 +617,7 @@ function imageBlockHtml(b, entryId, idx) {
   const src = b.data === undefined && entryId != null
     ? `/api/entry-image?id=${encodeURIComponent(String(entryId))}&block=${idx}`
     : `data:${esc(b.mimeType ?? "image/png")};base64,${b.data ?? ""}`;
-  return `<img class="tool-img" src="${src}" alt="工具返回图片（${esc(tip)}）" title="${esc(tip)}（点击切换原尺寸）" loading="lazy">`;
+  return `<img class="tool-img" src="${src}" alt="工具返回图片（${esc(tip)}）" title="${esc(tip)}（点击放大）" loading="lazy">`;
 }
 
 /**
@@ -1057,7 +1074,7 @@ $("transcript").addEventListener("click", async (ev) => {
     return;
   }
   const toolImg = ev.target.closest(".tool-img");
-  if (toolImg) { toolImg.classList.toggle("zoom"); return; } // 预览 ↔ 原尺寸（issue #134）
+  if (toolImg) { openLightbox(toolImg.src, toolImg.title); return; } // 灯箱全屏放大，点击/ESC 还原（issue #144）
   const ctxBtn = ev.target.closest(".ctx-btn");
   if (ctxBtn) {
     ev.stopPropagation(); // 不触发 run 折叠
