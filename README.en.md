@@ -133,7 +133,7 @@ Auth: once `PI_DURABLE_TOKEN` is set, every endpoint requires `Authorization: Be
 | `POST /api/wait-idle` | `{ timeoutMs?, session? }` wait for session idle (consistency before external automation); timeout → `{ idle: false }` |
 | `POST /api/approve` / `/api/approve/revoke` / `/api/approvals/dismiss` | approvals management |
 | `POST /api/backup` / `POST /api/restart` | online backup / hot restart |
-| `GET /api/state[?light=1]` | full snapshot (light = metadata only, ~1.2KB); `GET /api/events` for SSE incremental updates |
+| `GET /api/state[?light=1]` | full snapshot (light = metadata only, ~1.2KB; image blocks in the full view are slim references like SSE frames — fetch originals via `GET /api/entry-image`); `GET /api/events` for SSE incremental updates |
 | `GET /api/history` / `/api/entry?id=` / `/api/submission?id=` | transcript and submission records |
 | `GET /api/context?entryId=n` | model context at that entry (message digest, dump-proof) |
 | `GET /api/judge/log` / `GET /api/judge/checkups` | judge audit-log tail / run checkup records |
