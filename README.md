@@ -24,6 +24,8 @@ node host.js ask "列出本目录结构"   # 或者直接 CLI 提问
 - **持久会话**：SQLite（WAL）存储，崩溃后 `resume()` 接续未完成的 run（包括生成中的回答）
 - **多会话**：命名会话 ↔ conversation 映射，UI/CLI 随时切换
 - **模型**：完全复用 pi 配置（自定义中继 + 凭证），UI 内跨 provider 即时切换
+- **图片输入**（pi-durable 1.2.0）：`read` 工具可直接读图片（jpg/png/gif/webp/bmp）作图片块进上下文，Photon 预处理（EXIF 纠向、缩放到模型限制，worker 线程懒加载）；`PI_DURABLE_IMAGES=0` 可关
+- **codemode**（pi-durable 1.2.0，opt-in）：`PI_DURABLE_CODEMODE=1` 启用后 agent 可写 JS 脚本在 QuickJS 沙箱里批量调工具（嵌套调用），脚本崩溃后跨重启确定性回放
 - **分叉重试**：从任意提问分叉出新会话换说法重问，原会话不变
 - **上下文调试**：查看任意条目处模型实际看到的 context
 - **危险命令审批**：guard 拦截 + 待批清单 + 一键批准
@@ -77,6 +79,8 @@ host 不维护自己的模型配置——直接读 pi CLI 的 `~/.pi/agent/`，�
 | `PI_DURABLE_PROVIDER` / `PI_DURABLE_MODEL` / `PI_DURABLE_KEY_*` / `PI_DURABLE_PI_DIR` | 见上 |
 | `PI_DURABLE_JUDGE_URL` / `PI_DURABLE_JUDGE_KEY` / `PI_DURABLE_JUDGE_MODEL` | Jev/system-one 兼容判断端点（不设则用内置 heuristic 规则判断）；端点失败自动降级，安全功能永不禁用 |
 | `PI_DURABLE_JUDGE_ROUTING` | 设为 `auto` 启用忙时 judge 自动路由（未显式指定 whenBusy 时分类纠偏/排队） |
+| `PI_DURABLE_IMAGES` | `read` 图片支持（默认开）；设 `0` 关闭 Photon 预处理，图片仍按模型限制原样透传 |
+| `PI_DURABLE_CODEMODE` | codemode 工具（默认关）；设 `1` 启用（也可在 `data/host.json` 的 `features.codemode` 开） |
 
 依赖：Node >= 22.19（`node:sqlite` 的 ExperimentalWarning 可忽略）。
 
@@ -195,6 +199,13 @@ pi-durable 存储无跨进程锁：**一个存储同一时刻只能被一个进�
 
 `node host.js restart` / `POST /api/restart`：后继进程接管，未完成 run 自动 `resume()`。Web UI 的 SSE 自动重连。
 典型用途：改完 host 代码后零数据损失升级。实现细节与踩坑记录见 [ARCHITECTURE](docs/ARCHITECTURE.md)。
+
+### Session 失败自灭（pi-durable 1.2.0 语义）
+
+任何存储错误（磁盘满、IO 故障、库损坏）会永久关闭 Session（此后一切调用/等待 reject `SessionFailed`，不重试）。
+daemon 显式观察 `harness.closed`：失败即记日志、清 `serve.json`、**非零码退出**——不留「进程活着但永远答错」的僵尸，
+由人/supervisor 拉起后继。UI 侧栏实时区同时呈现 `pi.live.compactionFailure`（压缩失败保留到下次成功出摘要为止，
+此前这个失败是无声的）；bash 非零退出不再抛异常，而是携带 `exit_code` 的错误结果（模型可直接看到退出码）。
 
 ### 工具耗时
 

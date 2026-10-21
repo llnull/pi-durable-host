@@ -74,6 +74,24 @@ macOS 无 setsid），从工具里 nohup 的后台脚本会被一起杀——跨
 （重放会再杀后继 daemon 形成循环）、`ask` 默认拒绝（followUp 环等死锁），仅 `--session` 旁路会话放行；
 ② `/api/restart` 15s 防抖窗口（`restart.marker`，跨世代生效、过期自愈）。
 
+### Session 失败自灭与 pi.live 新信号（pi-durable 1.2.0）
+
+任何 Storage 错误永久关闭 Session（此后一切调用/等待 reject `SessionFailed`，不重试；`StorageRejected` 已移除）。
+daemon 在 SIGINT/SIGTERM 处理器旁注册 `harness.closed` 观察（Harness extends Session）：`reason === "failed"` 即
+记日志、清 `serve.json`、非零码退出。不能走 stop()：它会 exit(0)，且 zombie 态下看门狗的 `catch {}`
+会把 viewState 的持续 reject 吞掉，SSE 哑火但进程活着。优雅停止路径 resolve `{ reason: "closed" }` 不进此分支。
+同批接入的 live 信号：`pi.live.compactionFailure`（压缩失败保留到下次成功出摘要，UI 实时区渲染，
+此前这个失败无声）、`pi.live.nestedTools`（codemode 嵌套调用的运行态与 summary）。SSE 的 live 帧本就
+携带整个 pi.live doc，新字段零协议改动自动到达。bash 非零退出从 throw 改为携带 exit_code 的错误结果
+（guard 计时 wrap 的 finally 不受影响，screen 对 isError 结果本就跳过）。
+
+### 特性开关（featureOn，issue #132）
+
+`features.images`（默认开）/ `features.codemode`（默认关）：env（`PI_DURABLE_IMAGES` / `PI_DURABLE_CODEMODE`）
+优先于 host.json features 段。两者都动态 import：Photon wasm 与 quickjs wasm 只在启用时加载。
+images 初始化失败降级为原样透传（图片仍按模型限制返回），codemode 启用失败仅告警不阻塞启动——
+与 judge 降级同一条原则：新特性永远不成为可用性单点。
+
 ### 审计条目（host.config）
 
 `defineEntry("host.config")` 创建自定义 entry kind：无 `model` 字段 → `contribute()` 零贡献，
