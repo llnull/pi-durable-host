@@ -24,6 +24,8 @@ Model config is **reused directly from your local pi CLI's** `~/.pi/agent/` — 
 - **Persistent sessions**: SQLite (WAL) storage; after a crash, `resume()` continues unfinished runs (including in-flight responses)
 - **Multiple sessions**: named sessions ↔ conversation mapping; switch anytime from UI or CLI
 - **Models**: fully reuses pi config (custom relays + credentials); switch providers/models instantly in the UI
+- **Image input** (pi-durable 1.2.0): the `read` tool returns images (jpg/png/gif/webp/bmp) as image blocks; Photon preprocessing (EXIF orientation, resize to model limits, lazy worker thread); `PI_DURABLE_IMAGES=0` disables
+- **codemode** (pi-durable 1.2.0, opt-in): with `PI_DURABLE_CODEMODE=1` the agent can run JS scripts in a QuickJS sandbox that call tools as nested calls; scripts replay deterministically across restarts
 - **Fork & retry**: fork a new session from any past question, rephrase and re-ask — the original session is untouched
 - **Context debugging**: inspect exactly what the model saw at any entry
 - **Dangerous-command approval**: guard interception + pending list + one-click approval
@@ -77,6 +79,8 @@ Example custom relay (`~/.pi/agent/models.json`):
 | `PI_DURABLE_PROVIDER` / `PI_DURABLE_MODEL` / `PI_DURABLE_KEY_*` / `PI_DURABLE_PI_DIR` | see above |
 | `PI_DURABLE_JUDGE_URL` / `PI_DURABLE_JUDGE_KEY` / `PI_DURABLE_JUDGE_MODEL` | Jev/system-one compatible judge endpoint (falls back to the built-in heuristic rule judge when unset); endpoint failures degrade automatically — safety features are never disabled |
 | `PI_DURABLE_JUDGE_ROUTING` | set to `auto` to enable busy-time judge routing (classify steer/queue when whenBusy is not explicit) |
+| `PI_DURABLE_IMAGES` | `read` image support (default on); `0` disables Photon preprocessing — images still pass through as-is within model limits |
+| `PI_DURABLE_CODEMODE` | codemode tool (default off); set `1` to enable (also via `features.codemode` in `data/host.json`) |
 
 Requires Node >= 22.19 (the `node:sqlite` ExperimentalWarning can be ignored).
 
@@ -186,6 +190,10 @@ pi-durable storage has no cross-process lock: **one store can be opened by only 
 ### Hot restart
 
 `node host.js restart` / `POST /api/restart`: a successor process takes over and unfinished runs auto-`resume()`. The Web UI's SSE reconnects automatically. Typical use: upgrade after editing host code with zero data loss. Implementation notes and pitfalls: [ARCHITECTURE](docs/ARCHITECTURE.md).
+
+### Session-failure self-exit (pi-durable 1.2.0 semantics)
+
+Any storage error (disk full, IO failure, corruption) permanently closes the Session — every later call and wait rejects with `SessionFailed`, nothing retries. The daemon observes `harness.closed` and on failure logs, clears `serve.json`, and **exits non-zero** — no zombie "process alive but always wrong" daemon; a human/supervisor starts the successor. The UI live panel also surfaces `pi.live.compactionFailure` (kept until the next compaction succeeds — this failure used to be silent), and a nonzero bash exit is no longer an exception but an error result carrying `exit_code` (the model sees the code directly).
 
 ### Tool timing
 

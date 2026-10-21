@@ -28,7 +28,7 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { AssistantEntry, ToolResultEntry, createRegistry, Harness, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { CodingTools } from "@earendil-works/pi-durable/tools";
+import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -98,9 +98,33 @@ const DEFAULT_AGENT = {
 		"You are the Pi Durable host agent on this machine. Be concise. Work only inside the current working directory.",
 };
 
-function buildRegistry() {
+/**
+ * 特性开关（pi-durable 1.3.0 升级引入，issue #132）：
+ *   images  —— read 工具图片支持（Photon 预处理，worker 线程懒加载、30s 空闲自退）。默认开。
+ *   codemode —— codemode 工具（QuickJS 沙箱 + 崩溃回放）。默认关：占 prompt 预算，opt-in。
+ * env（PI_DURABLE_IMAGES / PI_DURABLE_CODEMODE）优先于 host.json features 段，与 cfgOr 同序。
+ * 值：1/true/on 开，0/false/off 关，未设取默认。
+ */
+function featureOn(envKey, fileKey, def) {
+	const v = process.env[envKey] ?? HOST_CONFIG.features?.[fileKey];
+	if (v === undefined || v === null || v === "") return def;
+	return !(v === false || v === "0" || v === "false" || v === "off");
+}
+
+async function buildRegistry() {
 	const registry = createRegistry();
-	registry.install(CodingTools);
+	// pi-durable 1.2.0：read 可将图片作为图片块返回。无 processor 时按模型限制原样透传；
+	// 配 Photon 则 EXIF 纠向 + 缩放到模型限制内。初始化失败降级为透传，不阻塞启动。
+	let images;
+	if (featureOn("PI_DURABLE_IMAGES", "images", true)) {
+		try {
+			const { createNodePhotonImages } = await import("@earendil-works/pi-durable/images/node");
+			images = await createNodePhotonImages();
+		} catch (e) {
+			console.error("[features] 图片处理器初始化失败，read 图片按模型限制原样透传：", e?.message ?? e);
+		}
+	}
+	registry.install(createCodingTools(images ? { images } : {}));
 	registry.install(buildProjectContext()); // injects workspace AGENTS.md when present
 	registry.install(buildGuard({ approvalsFile: APPROVALS_FILE, timingLog: TIMING_LOG, judge: JUDGE, mode: cfgOr("PI_DURABLE_GUARD", "guard", "mode") ?? "block" }));
 	if (SCREEN) {
@@ -113,6 +137,18 @@ function buildRegistry() {
 			},
 		});
 		if (hostScreen) registry.install(hostScreen); // heuristic provider 下 buildScreen 返回 null
+	}
+	// pi-durable 1.2.0 codemode（默认关，动态 import：quickjs wasm 只在启用时加载）：
+	// 模型写的 JS 脚本在 QuickJS 沙箱里调本会话工具（nested calls），脚本崩溃后确定性回放。
+	if (featureOn("PI_DURABLE_CODEMODE", "codemode", false)) {
+		try {
+			const { createCodemodeExtension } = await import("@earendil-works/pi-durable/codemode");
+			const { CodemodeSandbox } = await import("@earendil-works/pi-codemode");
+			registry.install(createCodemodeExtension({ sandbox: new CodemodeSandbox() }));
+			console.error("[features] codemode 工具已启用（QuickJS 沙箱；脚本可调 tools.*，跨重启回放）");
+		} catch (e) {
+			console.error("[features] codemode 启用失败（不阻塞启动）：", e?.message ?? e);
+		}
 	}
 	registry.install(SubagentExtension); // provides the `subagent` tool
 	return registry;
@@ -127,7 +163,7 @@ async function openHarness({ takeover = false } = {}) {
 		storage,
 		{
 			models: MODEL_LAYER.models,
-			registry: buildRegistry(),
+			registry: await buildRegistry(),
 			env: (target) =>
 				new NodeExecutionEnv({
 					cwd: target.cwd ?? WORKSPACE,

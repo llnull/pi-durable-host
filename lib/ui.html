@@ -855,7 +855,7 @@ function render(view) {
   // 侧栏：实时运行
   const lp = $("livePanel");
   const gen = live.generation;
-  if (busy || (live.tools ?? []).length || live.compactions?.length) {
+  if (busy || (live.tools ?? []).length || live.compactions?.length || live.compactionFailure || (live.nestedTools ?? []).length) {
     lp.style.display = "";
     let html = "";
     if (gen) {
@@ -872,6 +872,26 @@ function render(view) {
       html += `<div class="live-block"><div class="t">🗜 压缩（${esc(label)}${c.blocking ? " · 阻塞生成" : " · 后台"}，第 ${c.attempt + 1} 次）</div>`;
       if (c.retry) html += `<div class="muted">⏳ 压缩重试：${esc(c.retry.error)} · ${new Date(c.retry.at).toLocaleTimeString()}</div>`;
       html += `</div>`;
+    }
+    // pi-durable 1.2.0：压缩失败此前不可见（状态一消就无声无息）。保留到下次成功出摘要为止。
+    if (live.compactionFailure) {
+      const f = live.compactionFailure;
+      const label = { threshold: "阈值", overflow: "溢出", manual: "手动" }[f.reason] ?? f.reason;
+      html += `<div class="live-block"><div class="t" style="color: var(--red)">⚠ 压缩失败（${esc(label)}，第 ${(f.attempt ?? 0) + 1} 次）—— 已保留现场，直到下次压缩成功</div>`;
+      if (f.error) html += `<div class="e-body quoted">${esc(String(f.error).slice(0, 400))}</div>`;
+      html += `<div class="muted">影响：上下文无法收窄；若逼近阻塞阈值，下一轮生成将以 model_error 失败而非裸发。可重试对话或检查摘要模型。</div></div>`;
+    }
+    // pi-durable 1.2.0：嵌套工具调用（codemode 脚本经 executeTool 发起的子调用）
+    for (const n of live.nestedTools ?? []) {
+      const s = n.summary;
+      const head = `↳ ${esc(n.name ?? "tool")}（嵌套）`;
+      if (s) {
+        const mark = s.isError ? "✗" : "✓";
+        const dur = s.durationMs != null ? ` · ${Math.round(s.durationMs)}ms` : "";
+        html += `<div class="live-block"><div class="t"${s.isError ? " style=\"color: var(--red)\"" : ""}>${mark} ${head}${dur} 已结束</div>${s.error ? `<div class="e-body quoted">${esc(String(s.error).slice(0, 300))}</div>` : ""}</div>`;
+      } else {
+        html += `<div class="live-block"><div class="t">⏳ ${head} 运行中…</div></div>`;
+      }
     }
     $("liveBody").innerHTML = html || `<div class="muted">运行中…</div>`;
   } else lp.style.display = "none";
