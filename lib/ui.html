@@ -168,6 +168,9 @@
   .tool-card.ok .tc-status { color: var(--green); }
   .tool-card.running .tc-status { color: var(--amber); }
   .tool-card .tc-body { border-top: 1px solid var(--line); padding: 6px 12px; }
+  /* image block 渲染（issue #134）：read 图片返回的 base64 块，限高预览 + 点击切原尺寸 */
+  .tool-img { display: block; max-width: 100%; max-height: 320px; border: 1px solid var(--line); border-radius: 8px; margin: 6px 0; cursor: zoom-in; }
+  .tool-img.zoom { max-height: none; cursor: zoom-out; }
   .syschip { font-size: 12px; color: var(--faint); margin: 6px 0; }
 
   .kv { font-size: 12.5px; color: var(--soft); margin: 2px 0; overflow-wrap: anywhere; }
@@ -558,6 +561,38 @@ function groupRuns(entries) {
 }
 
 // ---------- 工具卡片：call 与 result 配对 ----------
+/** 文本块尾窗截断（保留结尾：诊断/报错多在尾部） */
+function tailPre(out) {
+  return `<pre class="code">${esc(out.length > 2000 ? "…\n" + out.slice(-2000) : out)}</pre>`;
+}
+
+/**
+ * image block 渲染（issue #134）：read 图片支持默认开后，pi.tool-result 的 content 会携带
+ * { type:"image", data:<base64>, mimeType }（P1 之前 base64 已随 view/entries 帧到客户端，直接 data URL 展示）。
+ * base64 字母表无引号/尖括号，src 属性免 esc；体积按 base64→字节 3/4 估算。
+ */
+function imageBlockHtml(b) {
+  const kb = b.data ? Math.round(String(b.data).length * 3 / 4 / 1024) : 0;
+  const tip = `${b.mimeType ?? "image"}${kb ? ` · ~${kb >= 1024 ? (kb / 1024).toFixed(1) + "MB" : kb + "KB"}` : ""}`;
+  return `<img class="tool-img" src="data:${esc(b.mimeType ?? "image/png")};base64,${b.data}" alt="工具返回图片（${esc(tip)}）" title="${esc(tip)}（点击切换原尺寸）" loading="lazy">`;
+}
+
+/**
+ * tool 结果 content 块的保序渲染（issue #134）：文本块（含 appendToolResult 追加的诊断文本）
+ * 聚进尾窗截断的 pre，image 块原位插入——此前 image 被静默丢弃，图片卡片只剩「参数 + ✅」。
+ */
+function toolOutputHtml(blocks) {
+  let html = "";
+  let texts = [];
+  const flush = () => { if (texts.length) { html += tailPre(texts.join("\n")); texts = []; } };
+  for (const b of blocks ?? []) {
+    if (b.type === "text") texts.push(b.text ?? "");
+    else if (b.type === "image") { flush(); html += imageBlockHtml(b); }
+  }
+  flush();
+  return html;
+}
+
 function toolCardHtml(call, resultEntry, liveTool) {
   const status = resultEntry ? (resultEntry.model?.[0]?.isError ? "err" : "ok") : liveTool ? (liveTool.status === "running" ? "running" : "") : "";
   const label = { err: "❌ 出错", ok: "✅ 完成", running: "⏳ 运行中", "": "· 等待" }[status];
@@ -565,13 +600,11 @@ function toolCardHtml(call, resultEntry, liveTool) {
   const argObj = call.arguments ?? {};
   const args = JSON.stringify(argObj);
   let body = `<details><summary>参数</summary><pre class="code">${esc(args.length > 800 ? args.slice(0, 800) + "…" : args)}</pre></details>`;
-  if ((call.name === "write" || call.name === "edit") && typeof argObj.path === "string" && argObj.path.trim()) {
+  if ((call.name === "write" || call.name === "edit" || call.name === "read") && typeof argObj.path === "string" && argObj.path.trim()) {
     body += `<div class="muted">📄 <a class="filelink" href="${toFileHref(argObj.path)}" target="_blank" rel="noopener noreferrer">在新窗口打开 ${esc(argObj.path)}</a></div>`;
   }
-  const output = resultEntry
-    ? asBlocks(resultEntry.model?.[0]?.content).map((b) => (b.type === "text" ? b.text : "")).join("\n")
-    : liveTool?.output ?? "";
-  if (output) body += `<pre class="code">${esc(output.length > 2000 ? "…\n" + output.slice(-2000) : output)}</pre>`;
+  if (resultEntry) body += toolOutputHtml(asBlocks(resultEntry.model?.[0]?.content));
+  else if (liveTool?.output) body += tailPre(liveTool.output);
   const diag = resultEntry?.data?.diagnostics ?? liveTool?.diagnostics ?? [];
   for (const d of diag) if (d.message) body += `<div class="muted">⚠ ${esc(d.message)}</div>`;
   return `<div class="tool-card ${status}"${resultEntry ? ` data-entry="${esc(String(resultEntry.id))}"` : ""}><details open>
@@ -595,8 +628,7 @@ function entryHtml(e, resultIndex, liveToolByCall) {
   if (e.kind === "pi.tool-result") {
     const tr = e.model?.[0];
     if (tr?.toolCallId && resultIndex.has(tr.toolCallId)) return ""; // 已并入工具卡片
-    const out = asBlocks(tr?.content).map((b) => (b.type === "text" ? b.text : "")).join("\n");
-    return `<div class="tool-card ${tr?.isError ? "err" : "ok"}"><details open><summary class="tc-head"><span class="tc-name">🛠 ${esc(tr?.toolName ?? "?")}</span><span class="tc-status">${tr?.isError ? "❌ 出错" : "✅ 完成"}</span></summary><div class="tc-body"><pre class="code">${esc(out)}</pre></div></details></div>`;
+    return `<div class="tool-card ${tr?.isError ? "err" : "ok"}"><details open><summary class="tc-head"><span class="tc-name">🛠 ${esc(tr?.toolName ?? "?")}</span><span class="tc-status">${tr?.isError ? "❌ 出错" : "✅ 完成"}</span></summary><div class="tc-body">${toolOutputHtml(asBlocks(tr?.content))}</div></details></div>`;
   }
   if (e.kind === "pi.assistant") {
     const parts = [];
@@ -993,6 +1025,8 @@ $("transcript").addEventListener("click", async (ev) => {
     } catch (err) { toast("分叉失败：" + err.message); }
     return;
   }
+  const toolImg = ev.target.closest(".tool-img");
+  if (toolImg) { toolImg.classList.toggle("zoom"); return; } // 预览 ↔ 原尺寸（issue #134）
   const ctxBtn = ev.target.closest(".ctx-btn");
   if (ctxBtn) {
     ev.stopPropagation(); // 不触发 run 折叠
