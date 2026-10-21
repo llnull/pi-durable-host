@@ -171,6 +171,8 @@
   /* image block 渲染（issue #134）：read 图片返回的 base64 块，限高预览 + 点击切原尺寸 */
   .tool-img { display: block; max-width: 100%; max-height: 320px; border: 1px solid var(--line); border-radius: 8px; margin: 6px 0; cursor: zoom-in; }
   .tool-img.zoom { max-height: none; cursor: zoom-out; }
+  .user-imgs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .user-imgs .tool-img { margin: 0; max-height: 220px; }
   .syschip { font-size: 12px; color: var(--faint); margin: 6px 0; }
 
   .kv { font-size: 12.5px; color: var(--soft); margin: 2px 0; overflow-wrap: anywhere; }
@@ -201,6 +203,17 @@
   }
   .composer textarea::placeholder { color: var(--faint); }
   .composer .row { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+  /* 图片附件（issue #138）：预览条 + 拖拽高亮 */
+  .attach-strip { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 4px; }
+  .attach-strip .att { position: relative; }
+  .attach-strip .att img { width: 64px; height: 64px; object-fit: cover; border-radius: 8px; border: 1px solid var(--line); display: block; }
+  .attach-strip .att button {
+    position: absolute; top: -6px; right: -6px; width: 18px; height: 18px; border-radius: 50%;
+    border: 1px solid var(--line); background: var(--bg); color: var(--soft); font: 11px/1 var(--mono);
+    cursor: pointer; padding: 0;
+  }
+  .attach-strip .att button:hover { color: var(--red); border-color: var(--red); }
+  .composer .inner.drag { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, transparent); }
   .composer .hint { flex: 1; min-width: 0; font-size: 11.5px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .composer .count { font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; }
   /* 快捷操作弹层：/ 命令面板 + @ 文件补全（issue #35） */
@@ -358,14 +371,19 @@
   </aside>
 </div>
 
-<div class="composer">
+<div class="composer" id="composer">
   <div class="inner">
     <div id="palette" class="palette" hidden></div>
-    <textarea id="input" placeholder="输入指令…（/ 命令 · @ 文件 · Enter 发送，Shift+Enter 换行）"></textarea>
+    <div id="attachStrip" class="attach-strip" hidden></div>
+    <textarea id="input" placeholder="输入指令…（/ 命令 · @ 文件 · 可粘贴/拖拽图片 · Enter 发送，Shift+Enter 换行）"></textarea>
     <div class="row">
       <span id="cstate" class="state idle" title="agent 当前状态"><span class="dot"></span><span id="cstateText">空闲</span></span>
       <span class="hint">Enter 发送 · Shift+Enter 换行 · Ctrl+Enter 发送 · 空输入按 ↑ 召回上一条 · 忙时发送自动排队，转向并入当前运行</span>
       <span class="count" id="charCount"></span>
+      <button id="btnAttach" class="cbtn" title="附加图片（也可直接粘贴或拖拽到输入框）">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg><span class="lbl">附件</span>
+      </button>
+      <input id="fileInput" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>
       <button id="btnAbort" class="cbtn danger" title="中止当前运行（后台任务不受影响）">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2"/></svg><span class="lbl">中止</span>
       </button>
@@ -626,7 +644,11 @@ function entryHtml(e, resultIndex, liveToolByCall) {
     return `<div class="audit-line">⚙ ${esc(label ?? "配置")}：${esc(fmt(e.data?.from))} → <b>${esc(fmt(e.data?.to))}</b></div>`;
   }
   if (e.kind === "pi.user") {
-    return `<div class="msg user"><div class="bubble">${linkifyFiles(esc(textBlocks(e.model?.[0]?.content)))}</div><button class="fork-btn" data-fork="${esc(e.id)}" title="从此提问分叉新会话（上下文复制到此处，可换指令重试）">⑂</button></div>`;
+    // 图片附件（issue #138）：content 可能携带 ImageContent 块；引用块（P1 瘦身后无 data）走 /api/entry-image
+    const blocks = asBlocks(e.model?.[0]?.content);
+    const imgs = blocks.map((b, idx) => (b.type === "image" ? imageBlockHtml(b, e.id, idx) : "")).join("");
+    const text = textBlocks(blocks);
+    return `<div class="msg user"><div class="bubble">${linkifyFiles(esc(text))}${imgs ? `<div class="user-imgs">${imgs}</div>` : ""}</div><button class="fork-btn" data-fork="${esc(e.id)}" title="从此提问分叉新会话（上下文复制到此处，可换指令重试）">⑂</button></div>`;
   }
   if (e.kind === "pi.system") {
     return `<details class="syschip"><summary>⚙ 系统提示变更（${esc(Object.keys(e.model?.[0]?.sections ?? {}).join(", ") || "—")}）</summary><pre class="code">${esc(JSON.stringify(e.model?.[0]?.sections ?? e.model?.[0]?.content ?? {}, null, 1).slice(0, 1200))}</pre></details>`;
@@ -1162,10 +1184,61 @@ $("transcript").addEventListener("scroll", () => {
 
 $("btnSend").onclick = send.bind(null, "followUp");
 $("btnSteer").onclick = send.bind(null, "steer");
+// ---------- 图片附件（issue #138）：粘贴/拖拽/附件按钮 → 随 ask 上传，走 pi-durable 原生 UserInput ----------
+const IMAGE_MIME_OK = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+const MAX_IMAGE_BASE64 = 14 * 1024 * 1024; // 与服务端一致：单图 base64 ≤ ~10MB 原始字节
+let attachments = []; // [{ mimeType, data, name }]
+
+function renderAttachments() {
+  const strip = $("attachStrip");
+  strip.hidden = !attachments.length;
+  strip.innerHTML = attachments.map((a, i) =>
+    `<span class="att"><img src="data:${esc(a.mimeType)};base64,${a.data}" alt="${esc(a.name ?? "图片")}" title="${esc(a.name ?? "图片")}"><button data-rm="${i}" title="移除">✕</button></span>`
+  ).join("");
+}
+
+async function addImageFiles(files) {
+  for (const f of files) {
+    if (!IMAGE_MIME_OK.has(f.type)) { toast(`跳过 ${f.name || "非图片"}：仅支持 png/jpeg/gif/webp`); continue; }
+    if (f.size > MAX_IMAGE_BASE64) { toast(`跳过 ${f.name || "图片"}：超过 10MB`, "info"); continue; }
+    if (attachments.length >= 8) { toast("单条最多 8 张图片"); break; }
+    const data = await new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(String(r.result).split(",")[1] ?? ""); // 去掉 data: 前缀
+      r.onerror = () => reject(new Error("读取失败"));
+      r.readAsDataURL(f);
+    });
+    if (data) attachments.push({ mimeType: f.type, data, name: f.name || null });
+  }
+  renderAttachments();
+}
+
+$("btnAttach").onclick = () => $("fileInput").click();
+$("fileInput").onchange = async () => { await addImageFiles([...$("fileInput").files]); $("fileInput").value = ""; };
+$("attachStrip").addEventListener("click", (ev) => {
+  const rm = ev.target.closest("[data-rm]");
+  if (rm) { attachments.splice(Number(rm.dataset.rm), 1); renderAttachments(); }
+});
+// 粘贴：clipboardData.items 里的图片文件
+$("input").addEventListener("paste", (ev) => {
+  const files = [...(ev.clipboardData?.items ?? [])].filter((it) => it.kind === "file" && IMAGE_MIME_OK.has(it.type)).map((it) => it.getAsFile()).filter(Boolean);
+  if (files.length) { ev.preventDefault(); addImageFiles(files); }
+});
+// 拖拽：composer 区域高亮，松手收图
+let dragDepth = 0;
+$("composer").addEventListener("dragenter", (ev) => { ev.preventDefault(); if (++dragDepth === 1) $("composer").querySelector(".inner").classList.add("drag"); });
+$("composer").addEventListener("dragover", (ev) => ev.preventDefault());
+$("composer").addEventListener("dragleave", () => { if (--dragDepth <= 0) { dragDepth = 0; $("composer").querySelector(".inner").classList.remove("drag"); } });
+$("composer").addEventListener("drop", (ev) => {
+  ev.preventDefault(); dragDepth = 0; $("composer").querySelector(".inner").classList.remove("drag");
+  const files = [...(ev.dataTransfer?.files ?? [])].filter((f) => IMAGE_MIME_OK.has(f.type));
+  if (files.length) addImageFiles(files);
+});
+
 async function send(whenBusy) {
   const input = $("input");
   let content = input.value.trim();
-  if (!content) return;
+  if (!content && !attachments.length) return;
   const typed = content;
   if (content.startsWith("/")) {
     // 斜杠命令分发：host 命令直接执行；pi 自定义命令展开后发送；未知命令原样透传
@@ -1187,9 +1260,11 @@ async function send(whenBusy) {
     }
   }
   $("btnSend").disabled = $("btnSteer").disabled = true;
+  const pendingImages = attachments;
   try {
-    await api("/api/ask", { method: "POST", body: JSON.stringify({ content, whenBusy }) });
+    await api("/api/ask", { method: "POST", body: JSON.stringify({ content, whenBusy, ...(pendingImages.length ? { images: pendingImages.map(({ mimeType, data, name }) => ({ mimeType, data, filename: name ?? undefined })) } : {}) }) });
     input.value = ""; input.style.height = "auto";
+    attachments = []; renderAttachments(); // 已随消息入库，清空预览条
     lastSent = typed; localStorage.removeItem(DRAFT_KEY); updateCount();
     followBottom = true; // 自己发言后视图跳到最新
     $("transcript").scrollTo({ top: $("transcript").scrollHeight, behavior: "smooth" });
