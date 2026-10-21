@@ -567,28 +567,34 @@ function tailPre(out) {
 }
 
 /**
- * image block 渲染（issue #134）：read 图片支持默认开后，pi.tool-result 的 content 会携带
- * { type:"image", data:<base64>, mimeType }（P1 之前 base64 已随 view/entries 帧到客户端，直接 data URL 展示）。
- * base64 字母表无引号/尖括号，src 属性免 esc；体积按 base64→字节 3/4 估算。
+ * image block 渲染（issue #134/#136）：read 图片支持默认开后，pi.tool-result 的 content 会携带
+ * { type:"image", … }。P1 后 SSE 帧里是瘦身引用块（mimeType/bytes，无 data）→ src 走
+ * /api/entry-image 懒加载（entry 不可变，端点 immutable 长缓存）；拿得到原始 base64 时
+ * （自包含场景）直接 data URL。体积：优先服务端算好的 bytes，否则按 base64→字节 3/4 估算。
  */
-function imageBlockHtml(b) {
-  const kb = b.data ? Math.round(String(b.data).length * 3 / 4 / 1024) : 0;
+function imageBlockHtml(b, entryId, idx) {
+  const bytes = b.bytes ?? (b.data ? Math.floor(String(b.data).length * 3 / 4) : 0); // 服务端已给字节；兜底按 base64 3/4 估算
+  const kb = Math.round(bytes / 1024);
   const tip = `${b.mimeType ?? "image"}${kb ? ` · ~${kb >= 1024 ? (kb / 1024).toFixed(1) + "MB" : kb + "KB"}` : ""}`;
-  return `<img class="tool-img" src="data:${esc(b.mimeType ?? "image/png")};base64,${b.data}" alt="工具返回图片（${esc(tip)}）" title="${esc(tip)}（点击切换原尺寸）" loading="lazy">`;
+  const src = b.data === undefined && entryId != null
+    ? `/api/entry-image?id=${encodeURIComponent(String(entryId))}&block=${idx}`
+    : `data:${esc(b.mimeType ?? "image/png")};base64,${b.data ?? ""}`;
+  return `<img class="tool-img" src="${src}" alt="工具返回图片（${esc(tip)}）" title="${esc(tip)}（点击切换原尺寸）" loading="lazy">`;
 }
 
 /**
  * tool 结果 content 块的保序渲染（issue #134）：文本块（含 appendToolResult 追加的诊断文本）
  * 聚进尾窗截断的 pre，image 块原位插入——此前 image 被静默丢弃，图片卡片只剩「参数 + ✅」。
+ * idx 为 content 数组下标，供引用块的 /api/entry-image 端点定位。
  */
-function toolOutputHtml(blocks) {
+function toolOutputHtml(blocks, entryId) {
   let html = "";
   let texts = [];
   const flush = () => { if (texts.length) { html += tailPre(texts.join("\n")); texts = []; } };
-  for (const b of blocks ?? []) {
+  (blocks ?? []).forEach((b, idx) => {
     if (b.type === "text") texts.push(b.text ?? "");
-    else if (b.type === "image") { flush(); html += imageBlockHtml(b); }
-  }
+    else if (b.type === "image") { flush(); html += imageBlockHtml(b, entryId, idx); }
+  });
   flush();
   return html;
 }
@@ -603,7 +609,7 @@ function toolCardHtml(call, resultEntry, liveTool) {
   if ((call.name === "write" || call.name === "edit" || call.name === "read") && typeof argObj.path === "string" && argObj.path.trim()) {
     body += `<div class="muted">📄 <a class="filelink" href="${toFileHref(argObj.path)}" target="_blank" rel="noopener noreferrer">在新窗口打开 ${esc(argObj.path)}</a></div>`;
   }
-  if (resultEntry) body += toolOutputHtml(asBlocks(resultEntry.model?.[0]?.content));
+  if (resultEntry) body += toolOutputHtml(asBlocks(resultEntry.model?.[0]?.content), resultEntry?.id);
   else if (liveTool?.output) body += tailPre(liveTool.output);
   const diag = resultEntry?.data?.diagnostics ?? liveTool?.diagnostics ?? [];
   for (const d of diag) if (d.message) body += `<div class="muted">⚠ ${esc(d.message)}</div>`;
@@ -628,7 +634,7 @@ function entryHtml(e, resultIndex, liveToolByCall) {
   if (e.kind === "pi.tool-result") {
     const tr = e.model?.[0];
     if (tr?.toolCallId && resultIndex.has(tr.toolCallId)) return ""; // 已并入工具卡片
-    return `<div class="tool-card ${tr?.isError ? "err" : "ok"}"><details open><summary class="tc-head"><span class="tc-name">🛠 ${esc(tr?.toolName ?? "?")}</span><span class="tc-status">${tr?.isError ? "❌ 出错" : "✅ 完成"}</span></summary><div class="tc-body">${toolOutputHtml(asBlocks(tr?.content))}</div></details></div>`;
+    return `<div class="tool-card ${tr?.isError ? "err" : "ok"}"><details open><summary class="tc-head"><span class="tc-name">🛠 ${esc(tr?.toolName ?? "?")}</span><span class="tc-status">${tr?.isError ? "❌ 出错" : "✅ 完成"}</span></summary><div class="tc-body">${toolOutputHtml(asBlocks(tr?.content), e.id)}</div></details></div>`;
   }
   if (e.kind === "pi.assistant") {
     const parts = [];
