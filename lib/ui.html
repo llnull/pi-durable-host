@@ -591,7 +591,10 @@ function tailPre(out) {
  * （自包含场景）直接 data URL。体积：优先服务端算好的 bytes，否则按 base64→字节 3/4 估算。
  */
 function imageBlockHtml(b, entryId, idx) {
-  const bytes = b.bytes ?? (b.data ? Math.floor(String(b.data).length * 3 / 4) : 0); // 服务端已给字节；兜底按 base64 3/4 估算
+  // 服务端已给精确字节；兜底手扣 base64 尾部 padding（issue #141）：floor(len*3/4) 高估 1-2B
+  const s64 = b.data ? String(b.data) : "";
+  const pad = /(==?)$/.exec(s64); 
+  const bytes = b.bytes ?? (s64 ? Math.floor(s64.length * 3 / 4) - (pad ? pad[1].length : 0) : 0);
   const kb = Math.round(bytes / 1024);
   const tip = `${b.mimeType ?? "image"}${kb ? ` · ~${kb >= 1024 ? (kb / 1024).toFixed(1) + "MB" : kb + "KB"}` : ""}`;
   const src = b.data === undefined && entryId != null
