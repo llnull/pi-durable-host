@@ -83,6 +83,8 @@ host 不维护自己的模型配置——直接读 pi CLI 的 `~/.pi/agent/`，�
 | `PI_DURABLE_CODEMODE` | codemode 工具（默认关）；设 `1` 启用（也可在 `data/host.json` 的 `features.codemode` 开） |
 | `PI_DURABLE_BASH_TIMEOUT` | bash 工具默认超时秒数（默认 `300`，`0` 关闭；也可在 `data/host.json` 的 `bash.timeout` 设）。模型未传 timeout 时注入，显式传更大值时封顶——防死循环命令无限挂死 run 与热重启（issue #146） |
 
+sidecar 调参（`data/host.json` 的 `judge.sidecar` 段）：`probeTimeoutMs`（探活超时，默认 700）、`missesBeforeRestart`（进程活着但探活连续未过多少个周期才判死换血，默认 3——偶发慢不等于死亡，立即换血会掐死在途 judge 请求，issue #147）、`killWaitMs` / `escalateWaitMs`（换血时停旧等待与 SIGKILL 升级）。
+
 依赖：Node >= 22.19（`node:sqlite` 的 ExperimentalWarning 可忽略）。
 
 ## Web UI（http://localhost:7600/）

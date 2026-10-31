@@ -110,6 +110,43 @@ test("ensureJudgeSidecar：端口被无代际记录的进程占用 → 不越权
 	}
 });
 
+/** 挂死型假网关：监听但永不应答（进程活着、探活超时——误判重启事故的复现形状）。 */
+function writeStallFixture(dataDir, port) {
+	const file = path.join(dataDir, "fixture-stall-gateway.mjs");
+	writeFileSync(file, `import http from "node:http";
+http.createServer((req, res) => { /* 永不应答 */ }).listen(${port}, "127.0.0.1");
+`);
+	return file;
+}
+
+test("ensureJudgeSidecar：探活未过但进程在 → 连续 N 次才判死换血（issue #147 回归）", async () => {
+	const port = await freePort();
+	const dataDir = tmpData();
+	const fixture = writeStallFixture(dataDir, port);
+	const sidecar = { command: process.execPath, args: [fixture], probeTimeoutMs: 150, readyMs: 1000, missesBeforeRestart: 3 };
+	const first = await ensureJudgeSidecar({ url: `http://127.0.0.1:${port}`, dataDir, sidecar });
+	spawned.push(first?.child);
+	assert.ok(first?.child, "应拉起子进程");
+	assert.ok(first?.child.exitCode === null, "挂死型网关进程应活着");
+	const pid = first.child.pid;
+	// 探活持续超时（进程在、不应答）：前 threshold-1 次都应暂不换血
+	for (let i = 1; i < 3; i++) {
+		const r = await ensureJudgeSidecar({ url: `http://127.0.0.1:${port}`, dataDir, sidecar });
+		assert.equal(r?.stalling, true, `第 ${i} 次未过应标记 stalling 暂不换血`);
+		assert.equal(r.pid, pid, "stalling 期间不换 pid");
+		const gen = JSON.parse(readFileSync(path.join(dataDir, "jevlike", "gateway.json"), "utf8"));
+		assert.equal(gen.misses, i, "misses 应累加");
+	}
+	// 第 threshold 次判死换血
+	const fourth = await ensureJudgeSidecar({ url: `http://127.0.0.1:${port}`, dataDir, sidecar });
+	spawned.push(fourth?.child);
+	assert.ok(fourth?.child, "连续未过达阈值应换血拉新");
+	assert.notEqual(fourth.child.pid, pid, "换血后是新 pid");
+	await Promise.race([once(first.child, "exit"), new Promise((r) => setTimeout(r, 3000))]);
+	// 信号致死：exitCode 为 null、signal 非空（首版断言只看 exitCode 误判未死）
+	assert.ok(first.child.exitCode !== null || first.child.signal !== null, "旧网关应被停止");
+});
+
 test("ensureJudgeSidecar：配置换代 → 停旧拉新", async () => {
 	const port = await freePort();
 	const dataDir = tmpData();
