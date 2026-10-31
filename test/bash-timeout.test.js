@@ -1,4 +1,4 @@
-// bash 默认超时注入的回归测试（2026-10-31 事故，issue #146：模型跑死循环命令不传 timeout，
+// bash 默认超时注入的回归测试（2026-10-31 事故，issue #147：模型跑死循环命令不传 timeout，
 // env.exec 无限等待 → run 挂死 → daemon 优雅停止/热重启全部失效）。
 // 用假 env 捕获 exec 收到的 options.timeout，不真跑命令。
 import test from "node:test";

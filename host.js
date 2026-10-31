@@ -112,7 +112,7 @@ function featureOn(envKey, fileKey, def) {
 }
 
 // bash 工具默认超时（秒）。模型不传 timeout 时 env.exec 会无限等待——一条死循环命令就能挂死
-// run，进而挂死 daemon 的优雅停止/热重启（2026-10-31 实测，issue #146）。默认 300；0 = 关闭。
+// run，进而挂死 daemon 的优雅停止/热重启（2026-10-31 实测，issue #147）。默认 300；0 = 关闭。
 // env PI_DURABLE_BASH_TIMEOUT 优先于 host.json bash.timeout。
 const bashTimeoutRaw = Number(cfgOr("PI_DURABLE_BASH_TIMEOUT", "bash", "timeout") ?? 300);
 const BASH_TIMEOUT = Number.isFinite(bashTimeoutRaw) && bashTimeoutRaw >= 0 ? bashTimeoutRaw : 300;

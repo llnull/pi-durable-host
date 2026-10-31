@@ -119,7 +119,7 @@ http.createServer((req, res) => { /* 永不应答 */ }).listen(${port}, "127.0.0
 	return file;
 }
 
-test("ensureJudgeSidecar：探活未过但进程在 → 连续 N 次才判死换血（issue #147 回归）", async () => {
+test("ensureJudgeSidecar：探活未过但进程在 → 连续 N 次才判死换血（issue #146 回归）", async () => {
 	const port = await freePort();
 	const dataDir = tmpData();
 	const fixture = writeStallFixture(dataDir, port);
