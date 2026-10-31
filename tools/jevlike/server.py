@@ -203,6 +203,17 @@ def answer_one(q: dict, context: str, ctx_budget: int) -> dict:
 
 
 class Handler(BaseHTTPRequestHandler):
+    # HTTP/1.1 keep-alive（2026-10-31 排查）：HTTP/1.0 默认每请求一条连接、服务端先关，
+    # 每次调用都给内核留一个 30s 的 TIME_WAIT。macOS 实测该元组上死条目堆积到 ~5k
+    # 且回收停滞时，内核对新 SYN 静默丢弃——网关进程完全健康却探活不过，被 daemon
+    # 反复判死换血。keep-alive 让 daemon/undici 与 UI 探测复用长连接，堆积速率降两个
+    # 数量级。do_POST 与 send_error 均带 content-length，满足 1.1 的定长要求。
+    protocol_version = "HTTP/1.1"
+    # 空闲收线要长于 daemon 的探活周期（60s）：否则每次探活都要重连一次，在
+    # TIME_WAIT 回收迟滞的内核上仍会缓慢堆积。120s 让探活/轮询把连接永久保温，
+    # 稳态连接创建数归零。
+    timeout = 120
+
     def log_message(self, fmt, *args):  # 安静
         pass
 
