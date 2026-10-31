@@ -81,6 +81,7 @@ host 不维护自己的模型配置——直接读 pi CLI 的 `~/.pi/agent/`，�
 | `PI_DURABLE_JUDGE_ROUTING` | 设为 `auto` 启用忙时 judge 自动路由（未显式指定 whenBusy 时分类纠偏/排队） |
 | `PI_DURABLE_IMAGES` | `read` 图片支持（默认开）；设 `0` 关闭 Photon 预处理，图片仍按模型限制原样透传 |
 | `PI_DURABLE_CODEMODE` | codemode 工具（默认关）；设 `1` 启用（也可在 `data/host.json` 的 `features.codemode` 开） |
+| `PI_DURABLE_BASH_TIMEOUT` | bash 工具默认超时秒数（默认 `300`，`0` 关闭；也可在 `data/host.json` 的 `bash.timeout` 设）。模型未传 timeout 时注入，显式传更大值时封顶——防死循环命令无限挂死 run 与热重启（issue #146） |
 
 依赖：Node >= 22.19（`node:sqlite` 的 ExperimentalWarning 可忽略）。
 
