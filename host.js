@@ -111,6 +111,12 @@ function featureOn(envKey, fileKey, def) {
 	return !(v === false || v === "0" || v === "false" || v === "off");
 }
 
+// bash 工具默认超时（秒）。模型不传 timeout 时 env.exec 会无限等待——一条死循环命令就能挂死
+// run，进而挂死 daemon 的优雅停止/热重启（2026-10-31 实测，issue #146）。默认 300；0 = 关闭。
+// env PI_DURABLE_BASH_TIMEOUT 优先于 host.json bash.timeout。
+const bashTimeoutRaw = Number(cfgOr("PI_DURABLE_BASH_TIMEOUT", "bash", "timeout") ?? 300);
+const BASH_TIMEOUT = Number.isFinite(bashTimeoutRaw) && bashTimeoutRaw >= 0 ? bashTimeoutRaw : 300;
+
 async function buildRegistry() {
 	const registry = createRegistry();
 	// pi-durable 1.2.0：read 可将图片作为图片块返回。无 processor 时按模型限制原样透传；
@@ -126,7 +132,7 @@ async function buildRegistry() {
 	}
 	registry.install(createCodingTools(images ? { images } : {}));
 	registry.install(buildProjectContext()); // injects workspace AGENTS.md when present
-	registry.install(buildGuard({ approvalsFile: APPROVALS_FILE, timingLog: TIMING_LOG, judge: JUDGE, mode: cfgOr("PI_DURABLE_GUARD", "guard", "mode") ?? "block" }));
+	registry.install(buildGuard({ approvalsFile: APPROVALS_FILE, timingLog: TIMING_LOG, judge: JUDGE, mode: cfgOr("PI_DURABLE_GUARD", "guard", "mode") ?? "block", bashTimeout: BASH_TIMEOUT }));
 	if (SCREEN) {
 		const hostScreen = buildScreen({
 			judge: JUDGE, mode: SCREEN_MODE,
