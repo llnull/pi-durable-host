@@ -1,5 +1,5 @@
 # 运行时产物不入库：jevlike 训练数据与 checkpoint 按部署流程生成
-tools/jevlike/data-*/
-tools/jevlike/*.pt
-tools/jevlike/ckpt.pt
-tools/jevlike/__pycache__/
+# 注意：嵌套 .gitignore 的带斜杠模式相对本目录解析，不要写 tools/jevlike/ 前缀
+data-*/
+*.pt
+__pycache__/
