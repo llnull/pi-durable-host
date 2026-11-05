@@ -455,10 +455,24 @@ function toast(msg, kind = "err") {
   toastTimer = setTimeout(() => (t.style.display = "none"), 4000);
 }
 async function api(path, opts) {
-  const res = await fetch(path, { headers: { "content-type": "application/json" }, ...opts });
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(body.error || res.statusText);
-  return body;
+  // timeoutMs：请求级超时（AbortController）。不设则可能永久挂起——daemon 的 Session 线被长占时
+  // （长 run/压缩/judge 网关慢），POST /api/ask 等写接口会排队不返回，调用方按钮永久禁用。
+  let signal = opts?.signal;
+  let timer;
+  if (opts?.timeoutMs && !signal) {
+    const ctrl = new AbortController();
+    signal = ctrl.signal;
+    timer = setTimeout(() => ctrl.abort(new DOMException("请求超时", "TimeoutError")), opts.timeoutMs);
+  }
+  try {
+    const res = await fetch(path, { headers: { "content-type": "application/json" }, ...opts, signal });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error || res.statusText);
+    return body;
+  } catch (err) {
+    if (err?.name === "TimeoutError" || err?.name === "AbortError") throw new Error(`请求超时（${Math.round((opts.timeoutMs ?? 0) / 1000)}s 无响应，daemon 可能正忙）`);
+    throw err;
+  } finally { if (timer) clearTimeout(timer); }
 }
 
 // ---------- 轻量 markdown 渲染（先转义再转换，防 XSS；自包含无依赖） ----------
@@ -649,6 +663,7 @@ function toolCardHtml(call, resultEntry, liveTool) {
   }
   if (resultEntry) body += toolOutputHtml(asBlocks(resultEntry.model?.[0]?.content), resultEntry?.id);
   else if (liveTool?.output) body += tailPre(liveTool.output);
+  else if (liveTool) body += `<div class="muted">⏳ 已启动，尚无输出…</div>`; // 空体卡片看起来像坏了
   const diag = resultEntry?.data?.diagnostics ?? liveTool?.diagnostics ?? [];
   for (const d of diag) if (d.message) body += `<div class="muted">⚠ ${esc(d.message)}</div>`;
   return `<div class="tool-card ${status}"${resultEntry ? ` data-entry="${esc(String(resultEntry.id))}"` : ""}><details open>
@@ -721,7 +736,10 @@ function liveTailHtml(ctx) {
   }
   for (const t of ctx.live.tools ?? []) {
     if (ctx.resultIndex.has(t.callId)) continue;
-    body += toolCardHtml({ name: t.name, id: t.callId, arguments: t.details?.arguments ?? {} }, null, t);
+    // 参数优先取工具 details（部分工具会上报），否则回退到已提交 assistant 条目的 toolCall 块：
+    // 否则运行中卡片只剩「🛠 bash ⏳ 运行中 + 参数 {}」，看不到在执行什么命令。
+    const committed = ctx.callIndex.get(t.callId);
+    body += toolCardHtml({ name: t.name, id: t.callId, arguments: t.details?.arguments ?? committed?.arguments ?? {} }, null, t);
   }
   return body;
 }
@@ -802,6 +820,7 @@ function runHeadHtml(g, runNo, isOpen, busy) {
 function render(view) {
   const live = view.docs?.["pi.live"] ?? {};
   const busy = Boolean(live.run);
+  uiBusy = busy;
   const st = $("status");
   st.textContent = busy ? "运行中" : "空闲";
   st.className = "badge " + (busy ? "busy" : "idle");
@@ -826,20 +845,43 @@ function render(view) {
 
   const entries = (view.entries ?? []).filter((e) => e.kind !== "head");
   const resultIndex = new Map();
+  const callIndex = new Map(); // callId → 已提交的 toolCall 块（运行中卡片的参数回退源）
   for (const e of entries) {
     if (e.kind === "pi.tool-result") {
       const tr = e.model?.[0];
       if (tr?.toolCallId) resultIndex.set(tr.toolCallId, e);
     }
+    for (const m of e.model ?? []) {
+      for (const b of asBlocks(m?.content)) {
+        if (b.type === "toolCall" && b.id) callIndex.set(b.id, b);
+      }
+    }
   }
   const liveToolByCall = new Map((live.tools ?? []).map((t) => [t.callId, t]));
-  const ctx = { live, busy, resultIndex, liveToolByCall };
+  const ctx = { live, busy, resultIndex, callIndex, liveToolByCall };
 
   const groups = groupRuns(entries);
   const q = $("search").value.trim().toLowerCase();
 
+  // 运行中指纹：live 帧驱动末轮重绘的关键。此前 sig 只含 committed 计数（entries/turns/tools），
+  // 流式期间这些不变 → 末轮 body 冻结：工具输出/状态/生成 partial 全部停在 run 开始那一刻，
+  // 用户无法判断进度（bash 卡「⏳ 运行中 + 空输出」直到下一条 entry 落地）。
+  const liveSig = busy
+    ? [
+      live.generation ? `${live.generation.attempt}:${(live.generation.message?.content ?? [])
+        .map((b) => `${b.type}:${(b.text ?? b.thinking ?? "").length}:${b.type === "toolCall" ? 1 : 0}`)
+        .join(",")}` : "",
+      (live.tools ?? []).map((t) => `${t.callId}:${t.status}:${(t.output ?? "").length}:${t.droppedBytes ?? 0}:${t.details ? JSON.stringify(t.details).length : 0}`)
+        .join("|"),
+      (live.compactions ?? []).length,
+      (live.nestedTools ?? []).map((n) => `${n.callId}:${n.status}:${(n.output ?? "").length}:${n.summary ? 1 : 0}`).join("|"),
+    ].join(";")
+    : "";
+
   // 展开/收起一体按钮：展示将要执行的动作；搜索过滤中轮次被强制展开，按钮不可用
   const runGroups = groups.filter((g) => g.type === "run");
+  // 最后一轮 run（live tail 挂载点，可能与最后一个 group 不同——尾部可能是 epoch）
+  const lastRunGroup = runGroups[runGroups.length - 1] ?? null;
   const allOpen = runGroups.length > 0 && runGroups.every((g) => expanded.has(String(g.firstId)));
   const toggleAllBtn = $("btnToggleAll");
   toggleAllBtn.textContent = allOpen ? "全部收起" : "全部展开";
@@ -866,7 +908,6 @@ function render(view) {
     const desiredOrder = [];
     let anyVisible = false;
     for (const g of groups) {
-      const isLast = g === groups[groups.length - 1];
       if (g.type === "epoch") {
         const key = `epoch:${g.entry.id}`;
         desiredOrder.push(key);
@@ -886,7 +927,7 @@ function render(view) {
       desiredOrder.push(key);
       const isOpen = q ? true : expanded.has(key);
       const cu = judgeCheckups.get(key);
-      const sig = [runNo, g.entries.length, g.turns, g.tools, g.answer ? 1 : 0, isOpen ? 1 : 0, isLast && busy ? 1 : 0, cu ? cu.flags?.length + ":" + (cu.at ?? "") : ""].join(":");
+      const sig = [runNo, g.entries.length, g.turns, g.tools, g.answer ? 1 : 0, isOpen ? 1 : 0, g === lastRunGroup && busy ? 1 : 0, cu ? cu.flags?.length + ":" + (cu.at ?? "") : "", g === lastRunGroup && busy ? liveSig : ""].join(":");
       let rec = runEls.get(key);
       if (!rec) {
         const el = document.createElement("div");
@@ -896,7 +937,7 @@ function render(view) {
         runEls.set(key, rec);
       }
       if (rec.sig !== sig) {
-        const isLastRun = g === [...groups].reverse().find((x) => x.type === "run");
+        const isLastRun = g === lastRunGroup;
         rec.el.className = `run ${isOpen ? "open" : ""}`;
         rec.el.innerHTML = runHeadHtml(g, runNo, isOpen, busy) + (isOpen ? `<div class="run-body">${runBodyHtml(g, ctx, isLastRun)}</div>` : "");
         rec.sig = sig;
@@ -946,6 +987,13 @@ function render(view) {
       }
       if (gen.retry) html += `<div class="muted">⏳ 重试：${esc(gen.retry.error)} · ${new Date(gen.retry.at).toLocaleTimeString()}</div>`;
       html += `</div>`;
+    }
+    // 本轮工具调用（此前只看得到生成/压缩/嵌套，顶层 bash 等长任务在侧栏完全不可见）
+    for (const tool of live.tools ?? []) {
+      const mark = tool.status === "running" ? "⏳" : tool.status === "done" ? "·" : "…";
+      const dropped = tool.droppedBytes ? ` · 丢弃 ${(tool.droppedBytes / 1024).toFixed(0)}KB` : "";
+      html += `<div class="live-block"><div class="t">${mark} 🛠 ${esc(tool.name)} · ${tool.status === "running" ? "运行中" : tool.status === "done" ? "已结束（落账中）" : "排队"}${dropped}</div>`;
+      if (tool.output) html += tailPre(tool.output.length > 1200 ? "…\n" + tool.output.slice(-1200) : tool.output);
     }
     for (const c of live.compactions ?? []) {
       const label = { threshold: "阈值", overflow: "溢出", manual: "手动" }[c.reason] ?? c.reason;
@@ -1255,8 +1303,11 @@ $("composer").addEventListener("drop", (ev) => {
   if (files.length) addImageFiles(files);
 });
 
+let sendInFlight = false; // 一条提交在途（含超时等待）：防 Enter 连按叠请求；超时解除后自动复位
+let lastFailedSend = null; // { requestId, content }：上次失败的提交——重发同一文案时复用 id（exactly-once 重试），改了文案就换新 id
 async function send(whenBusy) {
   const input = $("input");
+  if (sendInFlight) return; // 上一条还在提交（含超时等待中）：Enter 连按不得叠新请求，按钮本来也已禁用
   let content = input.value.trim();
   if (!content && !attachments.length) return;
   const typed = content;
@@ -1279,17 +1330,39 @@ async function send(whenBusy) {
       }
     }
   }
+  sendInFlight = true;
   $("btnSend").disabled = $("btnSteer").disabled = true;
+  const sendLabel = $("btnSendLabel");
+  const labelTimer = setTimeout(() => { if (sendInFlight) sendLabel.textContent = "提交中…"; }, 1500); // 慢提交要有反馈，别像死机
   const pendingImages = attachments;
+  // requestId：exactly-once 提交错号。超时/失败后重发同一文案 → 复用同一 id，服务端去重不双投；
+  // 文案变了（含重复发同一句话的新意图）自然换新 id。
+  const requestId = lastFailedSend?.content === content
+    ? lastFailedSend.requestId
+    : `ui-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   try {
-    await api("/api/ask", { method: "POST", body: JSON.stringify({ content, whenBusy, ...(pendingImages.length ? { images: pendingImages.map(({ mimeType, data, name }) => ({ mimeType, data, filename: name ?? undefined })) } : {}) }) });
+    await api("/api/ask", {
+      method: "POST",
+      timeoutMs: 30_000, // 不设超时时：daemon 忙/线路挂起 → fetch 永不返回 → 按钮永久禁用，只能刷新页面
+      body: JSON.stringify({ content, whenBusy, requestId, ...(pendingImages.length ? { images: pendingImages.map(({ mimeType, data, name }) => ({ mimeType, data, filename: name ?? undefined })) } : {}) }),
+    });
     input.value = ""; input.style.height = "auto";
     attachments = []; renderAttachments(); // 已随消息入库，清空预览条
     lastSent = typed; localStorage.removeItem(DRAFT_KEY); updateCount();
+    lastFailedSend = null; // 成功落库：重试窗口关闭
     followBottom = true; // 自己发言后视图跳到最新
     $("transcript").scrollTo({ top: $("transcript").scrollHeight, behavior: "smooth" });
-  } catch (err) { toast("提交失败：" + err.message); }
-  finally { $("btnSend").disabled = $("btnSteer").disabled = false; }
+  } catch (err) {
+    // 失败不清空输入：草稿还在（DRAFT_KEY 兼底），用户直接重发即可；同文案重发复用 requestId，服务端去重不双投
+    lastFailedSend = { requestId, content };
+    toast(`提交失败：${err.message}（输入已保留，可直接重试）`);
+  }
+  finally {
+    clearTimeout(labelTimer);
+    sendInFlight = false;
+    $("btnSend").disabled = $("btnSteer").disabled = false;
+    sendLabel.textContent = uiBusy ? "排队" : "发送"; // 恢复 render() 维护的忙时文案
+  }
 }
 $("btnAbort").onclick = async () => { try { await api("/api/abort", { method: "POST", body: "{}" }); } catch (err) { toast(err.message); } };
 $("btnCompact").onclick = async () => {
@@ -1304,29 +1377,46 @@ $("btnReset").onclick = async () => {
   try { await api("/api/reset", { method: "POST", body: JSON.stringify({ note }) }); toast("已提交重置", "ok"); }
   catch (err) { toast(err.message); }
 };
-// 任务图：点击切换显示/隐藏；打开时随 render 每 3s 自动刷新
+// 任务图：点击切换显示/隐藏；打开时随 render 自动刷新（空闲 3s 节流，忙时 1s——正好是用户最关心的时候）
 let tasksOpen = false;
 let lastTasksFetch = 0;
+let lastTasksHtml = ""; // 最近一次成功渲染的内容：请求失败/超时时保留现场而不是清空
+let uiBusy = false; // render() 同步：忙时任务图轮询加密到 1s
 async function refreshTasks() {
+  const p = $("tasksPanel");
+  if (!tasksOpen) { p.style.display = "none"; return; }
+  p.style.display = ""; // 先展开再等数据：请求慢/挂起时用户看到「加载中」而不是点了没反应
+  let data;
   try {
-    const { graph } = await api("/api/tasks");
-    const nodes = Object.values(graph?.tasks ?? {});
-    const p = $("tasksPanel");
-    if (!tasksOpen) { p.style.display = "none"; return; }
-    p.style.display = "";
-    $("tasksBody").innerHTML = nodes.length
-      ? nodes.map((n) => `<div class="kv"><b>#${esc(n.id)}</b> ${esc(n.kind)} · ${esc(n.state.status)}${n.state.phase ? ` (${esc(n.state.phase)})` : ""}${n.background ? " · 后台" : ""}${n.owner ? ` · owner #${esc(n.owner)}` : ""}</div>`).join("")
-      : `<div class="muted">（无活跃任务）</div>`;
-  } catch (err) { toast(err.message); }
+    data = await api("/api/tasks", { timeoutMs: 8000 }); // 后端忙碌时最多等 8s，不无限挂起
+  } catch (err) {
+    $("tasksBody").innerHTML = `<div class="muted">⚠ 任务图获取失败（${esc(err.message)}）${lastTasksHtml ? "，以下为上次内容" : ""}</div>` + lastTasksHtml;
+    return;
+  }
+  const nodes = Object.values(data?.graph?.tasks ?? {}).sort((a, b) => Number(a.id) - Number(b.id));
+  const statusMark = { running: "⏳", pending: "·", waiting: "⏸", completing: "🏁" };
+  const hint = data?.stale ? "（缓存不可用，可能不完整）" : "";
+  lastTasksHtml = nodes.length
+    ? nodes.map((n) => {
+      const st = n.state ?? {};
+      const mark = statusMark[st.status] ?? "?";
+      const label = { "pi.generation": "生成", "pi.tool": "工具", "pi.compaction": "压缩", "pi.run": "调度" }[n.kind] ?? n.kind;
+      const phase = st.phase ? `（${esc(st.phase)}）` : st.on ? `（等 #${st.on.join(" #")}）` : st.outcome ? `（${esc(st.outcome)}）` : "";
+      return `<div class="kv"><b>#${esc(n.id)}</b> ${mark} ${esc(label)} · ${esc(st.status || "?")}${phase}${n.background ? " · 后台" : ""}${n.owner ? ` · owner #${esc(n.owner)}` : ""}${n.abortRequested ? " · 已请求中止" : ""}</div>`;
+    }).join("")
+    : `<div class="muted">（无活跃任务${hint}）</div>`;
+  $("tasksBody").innerHTML = lastTasksHtml;
 }
 $("btnTasks").onclick = async () => {
   tasksOpen = !tasksOpen;
   if (!tasksOpen) { $("tasksPanel").style.display = "none"; return; }
+  $("tasksBody").innerHTML = `<div class="muted">加载中…</div>`;
   lastTasksFetch = Date.now();
   await refreshTasks();
 };
 function maybeRefreshTasks() {
-  if (!tasksOpen || Date.now() - lastTasksFetch < 3000) return;
+  const interval = uiBusy ? 1000 : 3000; // 忙时加密轮询
+  if (!tasksOpen || Date.now() - lastTasksFetch < interval) return;
   lastTasksFetch = Date.now();
   void refreshTasks();
 }
