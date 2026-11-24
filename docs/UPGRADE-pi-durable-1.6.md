@@ -54,7 +54,7 @@
 | `settings.json` | `defaultProvider` / `defaultModel` 不变；新增 `defaultThinkingLevel`、`defaultTools`（如 `+codemode`）、`cacheWarming`、资源路径 `prompts` / `skills` / `packages` / `extensions` | 默认模型读取不受影响；`defaultTools` / 资源路径尚未跟随 → 机会项 |
 | `prompts/` | 仍是 `~/.pi/agent/prompts/*.md`（直接子级），frontmatter `description` / `argument-hint`，`$1` `$@` `${1:-def}` `${@:N:L}` | host 的 `/api/commands` 与之同源，无需改 |
 | `models-store.json` / `auth.json` | 结构不变 | 无影响 |
-| 扩展包（如本机的 `npm:pi-web-access`） | pi CLI 有 web 访问能力 | host 有自己的扩展注册表，不加载 pi 扩展包 → **功能差距**（战略项，见机会项） |
+| 扩展包（如本机的 `npm:pi-web-access`） | pi CLI 有 web 访问能力 | host 有自己的扩展注册表，不加载 pi 扩展包；**已决定不做**（见第四节） |
 
 ## 二、影响面评估
 
@@ -159,7 +159,7 @@ group commit 与调度器扩展性（见第一节）、上述内存修复、关�
 | ⏸ 未做 | 子代理工具改为 park（`SubmissionDraft.notify`） | 单会话场景收益有限 |
 | ⏸ 未做 | `HarnessOptions.readOnly`、`telemetry`、更多 pi-ai API、sqlite prefix 表迁入 | 见第三节 |
 | ⏸ 未做（有意） | `identity`（User-Agent / 归因） | 上游默认已归因到 pi；自定义 UA 对中继端点的兼容性是未知风险、无明确收益 |
-| 战略 | pi 扩展包兼容 | 本机 pi CLI 通过 `npm:pi-web-access` 具备联网能力，host 的 agent 没有；两者扩展 API 不同，是独立的大工程 |
+| 🚫 不做（已决定） | pi 扩展包兼容 | 明确不在范围内：host 不加载 pi 扩展包（如本机 pi CLI 的 `npm:pi-web-access`）。host 的 agent 需要联网时另议（走 host 自己的扩展注册表） |
 
 ## 五、升级 Runbook
 
