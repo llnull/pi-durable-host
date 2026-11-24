@@ -58,6 +58,12 @@
   .ap-state.waiting { background: var(--amber-bg); color: var(--amber); font-weight: 600; }
   .ap-state.ended, .ap-state.legacy { background: var(--line); color: var(--faint); font-weight: 400; }
   #cwd { max-width: 300px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } /* 长路径不再把顶栏挤成两行 */
+  /* 宽屏下顶栏绝不换行：控件不收缩，空间不够时先让路径徽标收缩（已有省略号）；窄屏保留换行 */
+  @media (min-width: 1180px) {
+    header.top { flex-wrap: nowrap; }
+    header.top > h1, header.top > button, header.top > select, header.top > .badge:not(#cwd) { flex: none; white-space: nowrap; }
+    #cwd { flex: 0 1 240px; min-width: 76px; }
+  }
   .att-size { position: absolute; right: 22px; bottom: 2px; font-size: 10px; background: rgba(0,0,0,.55); color: #fff; border-radius: 6px; padding: 0 5px; }
   .att-warn { font-size: 12px; color: var(--amber); align-self: center; }
   /* 会话设置弹层（思考档位 / 轮数上限 / 压缩策略） */
@@ -140,6 +146,12 @@
   .run-body { padding: 6px 14px 10px; }
   .epoch { text-align: center; color: var(--faint); font-size: 12px; margin: 18px 0 4px; display: flex; align-items: center; gap: 10px; }
   .epoch::before, .epoch::after { content: ""; flex: 1; border-top: 1px dashed var(--line); }
+  /* 归档区：压缩 / 重置之前的对话（只读回看，不在模型上下文里） */
+  .older-btn { border: 1px solid var(--line); background: var(--paper); color: var(--soft); border-radius: 999px; padding: 1px 12px; font-size: 12px; cursor: pointer; white-space: nowrap; }
+  .older-btn:hover { border-color: var(--accent-line); color: var(--accent); }
+  .older { border: 1px dashed var(--line); border-radius: 12px; padding: 8px 12px 10px; margin: 0 0 14px; background: rgba(245,246,250,.75); }
+  .older-head { font-size: 12px; color: var(--faint); margin-bottom: 8px; }
+  .older-foot { text-align: center; font-size: 12px; color: var(--faint); margin-top: 8px; }
 
   /* ===== 气泡 ===== */
   .msg { display: flex; margin: 8px 0; }
@@ -470,6 +482,7 @@ function linkifyFiles(escapedText) {
 // ---------- 状态 ----------
 const expanded = new Set();   // 展开的 run 的首条 entry id
 let filterMode = "all";
+let older = null; // 归档区：压缩 / 重置之前的对话（{ conv, before, entries, hasMore, loading }）；边界变化即清空
 let hasRendered = false;
 let followBottom = true;      // 视图跟随：内容更新时自动滚到最新（用户上翻阅读时自动关闭）
 
@@ -898,6 +911,7 @@ function render(view) {
     modelSel.dataset.known = id;
   }
   $("cwd").textContent = agent.cwd ?? "";
+  $("cwd").title = agent.cwd ? `工作目录：${agent.cwd}` : "";
   $("thinkBadge").textContent = `思考 · ${thinkLabel(agent.thinkingLevel)}`;
 
   const entries = (view.entries ?? []).filter((e) => e.kind !== "head");
@@ -956,8 +970,9 @@ function render(view) {
 
   const t = $("transcript");
   const nearBottom = t.scrollHeight - t.scrollTop - t.clientHeight < 160;
-  if (groups.length) for (const el of [...t.children]) if (!el.dataset.key && !el.dataset.nomatch) el.remove(); // 清掉首屏占位「（加载中…）」（无 key 的子节点不参与结构对账）
+  if (groups.length) for (const el of [...t.children]) if (!el.dataset.key && !el.dataset.nomatch && !el.dataset.older) el.remove(); // 清掉首屏占位「（加载中…）」（无 key 的子节点不参与结构对账；归档区 data-older 另算）
 
+  const lastEpoch = [...groups].reverse().find((g) => g.type === "epoch") ?? null; // 活跃段的起点由最新一道分隔线决定
   if (!groups.length) {
     runEls.clear();
     t.innerHTML = `<div class="muted">${entries.length ? "（无匹配内容）" : "（暂无对话 · 在下方输入第一条指令）"}</div>`;
@@ -970,13 +985,20 @@ function render(view) {
         const key = `epoch:${g.entry.id}`;
         desiredOrder.push(key);
         anyVisible = true; // epoch 恒可见，不应触发"无匹配"占位
-        if (!runEls.has(key)) {
-          const label = g.entry.kind === "pi.reset" ? "上下文重置" : "上下文压缩";
-          const summary = textBlocks(g.entry.model?.[0]?.content);
+        const label = g.entry.kind === "pi.reset" ? "上下文重置" : "上下文压缩";
+        // 最新的一道分隔线承载「查看此前的对话」入口（pi-durable 1.5 起完整历史仍在库里）；归档状态变了就重画
+        const esig = `epoch:${g === lastEpoch ? olderSig() : "plain"}`;
+        let erec = runEls.get(key);
+        if (!erec) {
           const el = document.createElement("div");
           el.dataset.key = key;
-          el.innerHTML = `<div class="epoch">── ${label} ──</div>` + (summary ? `<div class="quoted muted md">${mdToHtml(summary)}</div>` : "");
-          runEls.set(key, { el, sig: "epoch" });
+          erec = { el, sig: "" };
+          runEls.set(key, erec);
+        }
+        if (erec.sig !== esig) {
+          const summary = textBlocks(g.entry.model?.[0]?.content);
+          erec.el.innerHTML = `<div class="epoch">── ${label} ──${g === lastEpoch ? olderButtonHtml() : ""}</div>` + (summary ? `<div class="quoted muted md">${mdToHtml(summary)}</div>` : "");
+          erec.sig = esig;
         }
         continue;
       }
@@ -1027,6 +1049,12 @@ function render(view) {
     } else noMatch?.remove();
   }
 
+  // 归档区：边界 = 活跃段首条。会话切换、或出现新的分隔线（边界前移）→ 归档清空重来。
+  // 在顶部补内容时把滚动位置同步下移，别让正在阅读的内容从眼前跳走。
+  const firstActiveId = entries.length ? entries[0].id : null;
+  if (older && (older.conv !== (view.conversation?.id ?? null) || older.before !== firstActiveId)) older = null;
+  const grew = renderOlder();
+  if (grew && !nearBottom && !followBottom) t.scrollTop += grew;
   if (nearBottom || followBottom) t.scrollTop = t.scrollHeight; // 内容更新时视图跟随（用户上翻阅读时不拉拽）
   maybeRefreshTasks(); // 任务图面板打开时随渲染节流刷新（内部再限 3s）
   maybeRefreshFiles();
@@ -1212,6 +1240,8 @@ $("ctxClose").onclick = () => { $("ctxModal").style.display = "none"; };
 $("ctxModal").addEventListener("click", (ev) => { if (ev.target === $("ctxModal")) $("ctxModal").style.display = "none"; });
 
 $("transcript").addEventListener("click", async (ev) => {
+  const olderBtn = ev.target.closest("[data-older-load]");
+  if (olderBtn) { loadOlder(); return; } // 压缩 / 重置之前的对话：分页回看
   const forkBtn = ev.target.closest(".fork-btn");
   if (forkBtn) {
     if (!confirm("从此提问分叉新会话？新会话复制到此处为止的上下文，当前会话不变。")) return;
@@ -1253,6 +1283,63 @@ $("transcript").addEventListener("click", async (ev) => {
   rerender(); // 增量渲染：只重建该 run，历史 run 稳定不动
 });
 function rerender() { if (lastView) render(lastView); }
+
+// ---------- 归档区：压缩 / 重置之前的对话（pi-durable 1.5 起视图历史完整；活跃段之前的条目按需分页回看） ----------
+const olderSig = () => (older ? `${older.entries.length}:${older.entries[0]?.id ?? ""}:${older.hasMore}:${older.loading}` : "none");
+function olderButtonHtml() {
+  if (!older) return `<button class="older-btn" data-older-load="1" title="加载这道分隔线之前的对话（只读回看，不在模型上下文里）">查看此前的对话</button>`;
+  if (older.loading) return `<span class="muted" style="font-size:12px">加载中…</span>`;
+  return older.hasMore ? `<button class="older-btn" data-older-load="1">加载更早</button>` : `<span class="muted" style="font-size:12px">已是最早</span>`;
+}
+/** 渲染置顶的归档容器（#transcript 的第一个子节点，无 data-key，不参与结构对账）。返回高度变化量（顶部补内容时用于校正滚动）。 */
+function renderOlder() {
+  const t = $("transcript");
+  let box = t.querySelector(":scope > [data-older]");
+  if (!older || !older.entries.length) { box?.remove(); return 0; }
+  const heightBefore = box ? box.offsetHeight : 0;
+  if (!box) {
+    box = document.createElement("div");
+    box.className = "older";
+    box.dataset.older = "1";
+    t.prepend(box);
+  }
+  const sig = olderSig();
+  if (box.dataset.sig !== sig) {
+    box.dataset.sig = sig;
+    // 条目独立渲染（用户气泡 / 助手气泡含工具卡片 / 系统提示 / 审计行），工具调用与结果在本批内配对
+    const ctx = { live: {}, busy: false, resultIndex: new Map(), callIndex: new Map(), liveToolByCall: new Map() };
+    for (const e of older.entries) {
+      const tr = e.kind === "pi.tool-result" ? e.model?.[0] : null;
+      if (tr?.toolCallId) ctx.resultIndex.set(tr.toolCallId, e);
+      for (const m of e.model ?? []) for (const b of asBlocks(m?.content)) if (b.type === "toolCall" && b.id) ctx.callIndex.set(b.id, b);
+    }
+    box.innerHTML =
+      `<div class="older-head">📚 此前的对话 · 已加载 ${older.entries.length} 条（在模型上下文之外，仅供回看）</div>` +
+      older.entries.map((e) => entryHtmlCached(e, ctx)).join("") +
+      `<div class="older-foot">${older.loading ? "加载中…" : older.hasMore ? `<button class="older-btn" data-older-load="1">加载更早</button>` : "── 已是最早的对话 ──"}</div>`;
+  }
+  return (box.offsetHeight || 0) - heightBefore;
+}
+async function loadOlder() {
+  if (!uiView || older?.loading) return;
+  const firstActiveId = (uiView.entries ?? [])[0]?.id;
+  if (firstActiveId === undefined) return;
+  const conv = uiView.conversation?.id ?? null;
+  if (!older || older.conv !== conv || older.before !== firstActiveId) older = { conv, before: firstActiveId, entries: [], hasMore: true, loading: false };
+  if (!older.hasMore) return;
+  older.loading = true; rerender();
+  try {
+    const from = older.entries.length ? older.entries[0].id : older.before;
+    // 直读类端点在 Session 线被长 run 占用时可能变慢（与 /api/status 当初同病）：给个上限，别无限「加载中」
+    const r = await api(`/api/entries?before=${encodeURIComponent(from)}&limit=50`, { timeoutMs: 30_000 });
+    older.entries = [...(r.items ?? []), ...older.entries];
+    older.hasMore = Boolean(r.hasMore);
+    if (!(r.items ?? []).length && !older.hasMore) toast("没有更早的对话了", "info");
+  } catch (err) {
+    toast("加载更早的对话失败：" + err.message);
+  }
+  older.loading = false; rerender();
+}
 
 // ---------- 定位与跳转（issue #117）----------
 // 展开（必要时）并滚动到目标 run；toError 时优先滚到第一个出错工具卡并闪烁高亮
