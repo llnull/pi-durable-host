@@ -1,8 +1,8 @@
 # pi-durable 1.3.0 → 1.6.0 与 pi CLI 1.6.0 同步升级评估
 
-> **状态（2026-11-24）**：**已合并、已迁移**（分支 `feat/pi-durable-1.6`）。适配补丁先在数据快照的隔离副本上全量验证
+> **状态（2026-11-24）**：**已合并、已迁移**（issue #157–#163 → PR #164–#170）。适配补丁先在数据快照的隔离副本上全量验证
 > （单测 79/79、迁移、CLI、daemon、SSE、模型往返、压缩/重置、并发切会话、热重启、盘满自灭），随后按第五节 runbook 上线：
-> 升级前备份 `data/backups/pre-pi-durable-1.6-2026-11-24T03-04-24Z.sqlite`（schema v1，文件名不参与轮转，请长期保留）；
+> 升级前备份 `data/backups/pre-pi-durable-1.6-2026-11-24T03-04-24Z.sqlite`（schema v1）在迁移验证通过后按决定删除（不回退到 1.3.0）；
 > 真实库迁移后 `durable_schema` = 2，21,164 条 entry / 13 个会话完好，四个会话活跃段条数与升级前逐条一致，
 > 默认模型回到与 pi CLI 一致的 `glm-5.4`。补丁文件已随合并删除（提交即补丁）。
 > **新能力落地（同日）**：迁移后按第四节的清单逐项实现了审批闸门、系统事件、会话运行策略、图片整理、归档回看等，
@@ -163,7 +163,7 @@ group commit 与调度器扩展性（见第一节）、上述内存修复、关�
 
 ## 五、升级 Runbook
 
-1. **预检**：`node host.js status` 确认 `busy: no`；`git status` 干净；`node host.js backup`——**升级前这份备份不要被轮转掉**。
+1. **预检**：`node host.js status` 确认 `busy: no`；`git status` 干净；`node host.js backup`——迁移单向，回滚只能靠它，上线验证通过前别让它被轮转掉（验证通过后是否保留按需决定）。
 2. **停 daemon**（冷停，不要热重启）：`kill -TERM <pid>`。
    依赖升级会在运行中的进程脚下替换 `node_modules`——photon / codemode 是懒加载的，热重启路径上可能加载到不匹配的版本。
 3. **应用**：`git apply docs/upgrade-pi-durable-1.6.patch` → `npm install` → 连同 `package-lock.json` 一起提交。
@@ -184,7 +184,7 @@ group commit 与调度器扩展性（见第一节）、上述内存修复、关�
 
 | 风险 | 缓解 |
 |---|---|
-| 单向迁移（schema v2 + 三个文档版本） | 强制备份并保留；迁移只在首个打开存储的进程发生（单写者锁保证只有一个）；已在真实数据快照上实测 |
+| 单向迁移（schema v2 + 三个文档版本） | 升级前先备份（回滚只能靠它），上线验证通过（条数核对 + 冒烟）后去留按需；迁移只在首个打开存储的进程发生（单写者锁保证只有一个）；已在真实数据快照上实测 |
 | 静默失效类问题修漏 | 补丁已逐项在副本上验证（第三节）；合并后头几天留意 serve.log 的 `[watchdog]` / `补页失败` 与 UI 的 runFailure 提示 |
 | 凭证优先级变化：`models.json` 的 `apiKey` 现在优先于 `auth.json`（pi 同序；此前相反） | 本机 `models.json` 没有 `apiKey`，无实际影响；README 里写明 |
 | 自定义模型缺省值对齐 pi：`contextWindow` 128000 / `maxTokens` 16384（原 200000 / 65536） | 只影响 `models.json` 里省略这两个字段的模型；README 示例是显式写出的 |
