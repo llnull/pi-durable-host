@@ -12,9 +12,10 @@
 		"tasks": "node host.js tasks"
 	},
 	"dependencies": {
-		"@earendil-works/chord": "^1.3.0",
-		"@earendil-works/pi-ai": "^1.3.0",
-		"@earendil-works/pi-codemode": "^1.3.0",
-		"@earendil-works/pi-durable": "^1.3.0"
+		"@earendil-works/chord": "^1.6.0",
+		"@earendil-works/pi-ai": "^1.6.0",
+		"@earendil-works/pi-codemode": "^1.6.0",
+		"@earendil-works/pi-durable": "^1.6.0",
+		"@earendil-works/pi-schema": "^1.6.0"
 	}
 }

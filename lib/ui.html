@@ -976,7 +976,7 @@ function render(view) {
   // 侧栏：实时运行
   const lp = $("livePanel");
   const gen = live.generation;
-  if (busy || (live.tools ?? []).length || live.compactions?.length || live.compactionFailure || (live.nestedTools ?? []).length) {
+  if (busy || (live.tools ?? []).length || live.compactions?.length || live.compactionFailure || live.runFailure || (live.nestedTools ?? []).length) {
     lp.style.display = "";
     let html = "";
     if (gen) {
@@ -990,13 +990,17 @@ function render(view) {
     }
     // 本轮工具调用（此前只看得到生成/压缩/嵌套，顶层 bash 等长任务在侧栏完全不可见）
     for (const tool of live.tools ?? []) {
-      const mark = tool.status === "running" ? "⏳" : tool.status === "done" ? "·" : "…";
+      // pi-durable 1.4/1.6：槽状态新增 sleeping（定时休眠，不占调用）/ waiting（等子任务）
+      const slotLabel = { running: "运行中", done: "已结束（落账中）", sleeping: "休眠等待", waiting: "等待子任务" }[tool.status] ?? "排队";
+      const mark = tool.status === "running" ? "⏳" : tool.status === "done" ? "·" : tool.status === "sleeping" ? "⏰" : "…";
       const dropped = tool.droppedBytes ? ` · 丢弃 ${(tool.droppedBytes / 1024).toFixed(0)}KB` : "";
-      html += `<div class="live-block"><div class="t">${mark} 🛠 ${esc(tool.name)} · ${tool.status === "running" ? "运行中" : tool.status === "done" ? "已结束（落账中）" : "排队"}${dropped}</div>`;
+      html += `<div class="live-block"><div class="t">${mark} 🛠 ${esc(tool.name)} · ${slotLabel}${dropped}</div>`;
       if (tool.output) html += tailPre(tool.output.length > 1200 ? "…\n" + tool.output.slice(-1200) : tool.output);
     }
     for (const c of live.compactions ?? []) {
-      const label = { threshold: "阈值", overflow: "溢出", manual: "手动" }[c.reason] ?? c.reason;
+      // pi-durable 1.5：CompactionStatus.reason 更名 trigger（reason 留给失败原因）；旧字段兜底只为协议兼容
+      const trigger = c.trigger ?? c.reason;
+      const label = { threshold: "阈值", overflow: "溢出", manual: "手动" }[trigger] ?? trigger;
       html += `<div class="live-block"><div class="t">🗜 压缩（${esc(label)}${c.blocking ? " · 阻塞生成" : " · 后台"}，第 ${c.attempt + 1} 次）</div>`;
       if (c.retry) html += `<div class="muted">⏳ 压缩重试：${esc(c.retry.error)} · ${new Date(c.retry.at).toLocaleTimeString()}</div>`;
       html += `</div>`;
@@ -1004,10 +1008,22 @@ function render(view) {
     // pi-durable 1.2.0：压缩失败此前不可见（状态一消就无声无息）。保留到下次成功出摘要为止。
     if (live.compactionFailure) {
       const f = live.compactionFailure;
-      const label = { threshold: "阈值", overflow: "溢出", manual: "手动" }[f.reason] ?? f.reason;
-      html += `<div class="live-block"><div class="t" style="color: var(--red)">⚠ 压缩失败（${esc(label)}，第 ${(f.attempt ?? 0) + 1} 次）—— 已保留现场，直到下次压缩成功</div>`;
+      // pi-durable 1.5：CompactionFailure 同样改名 trigger，且不再带 attempt
+      const trigger = f.trigger ?? f.reason;
+      const label = { threshold: "阈值", overflow: "溢出", manual: "手动" }[trigger] ?? trigger;
+      html += `<div class="live-block"><div class="t" style="color: var(--red)">⚠ 压缩失败（${esc(label)}）—— 已保留现场，直到下次压缩成功</div>`;
       if (f.error) html += `<div class="e-body quoted">${esc(String(f.error).slice(0, 400))}</div>`;
       html += `<div class="muted">影响：上下文无法收窄；若逼近阻塞阈值，下一轮生成将以 model_error 失败而非裸发。可重试对话或检查摘要模型。</div></div>`;
+    }
+    // pi-durable 1.5：run 没给出回答就结束的原因，保留到下一次 run 开始——此前这种结束只能靠猜。
+    // aborted / reset 是用户主动行为（中性色）；其余（模型错误、无模型、任务故障、进程中断…）按异常呈现。
+    if (live.runFailure) {
+      const f = live.runFailure;
+      const label = { model_error: "模型错误", no_model: "无可用模型", aborted: "已中止", reset: "已重置", faulted: "任务故障", orphaned: "任务失管", interrupted: "进程中断且重试已耗尽", restart_limit: "连续重启达上限", nothing_to_answer: "上下文里没有可回答的内容", turn_limit: "达到单次 run 的轮数上限" }[f.reason] ?? f.reason;
+      const userInitiated = f.reason === "aborted" || f.reason === "reset";
+      html += `<div class="live-block"><div class="t"${userInitiated ? "" : ' style="color: var(--red)"'}>⚠ 上一个 run 未给出回答就结束了（${esc(label)}）</div>`;
+      if (f.detail) html += `<div class="e-body quoted">${esc(String(f.detail).slice(0, 400))}</div>`;
+      html += `<div class="muted">该 run 的输入未被回答：可直接重新提问，或用 ⑂ 从历史条目分叉重试。</div></div>`;
     }
     // pi-durable 1.2.0：嵌套工具调用（codemode 脚本经 executeTool 发起的子调用）
     for (const n of live.nestedTools ?? []) {

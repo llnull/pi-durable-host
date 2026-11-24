@@ -39,7 +39,7 @@ import { createJudge } from "./lib/judge.js";
 import { openModelLayer } from "./lib/models.js";
 import { startServer } from "./lib/server.js";
 import { detectDaemon, daemonApi } from "./lib/daemon.js";
-import { collectStatus, printHistory, printStatus, textOf } from "./lib/format.js";
+import { collectStatus, printHistory, printStatus, readTaskGraph, readView, textOf } from "./lib/format.js";
 import { approveCommand, pendingFileOf, readApprovals, readPending, revokeApprovalAt } from "./lib/approvals.js";
 import { backupStorageFile, rotateLog } from "./lib/backup.js";
 import { DEFAULT_SESSION, assertSessionName, readSessions, sessionsFile, sessionConversationId, writeSessions } from "./lib/sessions.js";
@@ -449,8 +449,8 @@ async function cmdTasks() {
 	const context = BACKGROUND_CONTEXT;
 	const harness = await openHarness();
 	try {
-		const graph = await harness.taskGraph(context);
-		printTaskGraph(graph.value ?? graph);
+		// pi-durable 1.5：Harness.taskGraph() 已移除，改经 watchTaskGraph 挂-读-停（lib/format.js）
+		printTaskGraph(await readTaskGraph(harness, context));
 	} finally {
 		await harness.close(context);
 	}
@@ -498,7 +498,8 @@ async function cmdWait(timeoutMs = 600000) {
 		for (const [name, entry] of Object.entries(store.sessions)) {
 			const conv = name === DEFAULT_SESSION ? root : await harness.conversation(entry.conversationId, context);
 			if (!conv) continue;
-			const view = (await conv.viewState(context)).value ?? {};
+			// pi-durable 1.5：viewState() 已移除；这里只要 docs，最小窗口的 readView 即可
+			const view = await readView(conv, context);
 			for (const id of view.docs?.["pi.live"]?.run?.inputs ?? []) inputs.push({ name, id: String(id) });
 		}
 		if (inputs.length === 0) {
@@ -794,7 +795,7 @@ async function cmdServe(args) {
 	const harness = await openHarness({ takeover });
 	try {
 		const root = await getRoot(harness);
-		const view = (await root.viewState(context)).value ?? {};
+		const view = await readView(root, context); // pi-durable 1.5：viewState() 已移除（见 lib/format.js）
 		const inputs = (view.docs?.["pi.live"]?.run?.inputs ?? []).map(String);
 		if (inputs.length > 0) console.error(`[serve] 检测到未完成的 run（inputs: ${inputs.join(", ")}），resume() 已接管。`);
 		// 具名会话由服务端按需打开，不会走 getRoot/conversationFor；启动时统一校正残留的旧模型配置。
