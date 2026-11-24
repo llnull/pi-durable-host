@@ -191,3 +191,15 @@ group commit 与调度器扩展性（见第一节）、上述内存修复、关�
 | 压缩闸门修复后 `compactGate` 记录会明显变多（原先漏掉第 2 次起的所有压缩） | 属预期；heuristic 模式下阈值不变 |
 | 内存：daemon 持有"活跃段 + 一页"的 transcript | 与旧 `viewState` 持有整段活跃 transcript 相当；上游同期的 watcher 内存修复是净收益 |
 | 流式内容最多丢约 1 秒 | 可接受；介意则 `persistWithinMs: 0` |
+
+### 上线后的默认行为变化（新能力带来的）
+
+| 变化 | 说明 | 怎么调 |
+|---|---|---|
+| codemode 默认开启 | 跟随 pi `settings.json` 的 `defaultTools`（本机为 `["+codemode"]`）。此前 host 里默认关 | `PI_DURABLE_CODEMODE=0` 或 `data/host.json` 的 `features.codemode: false` |
+| 危险命令：挂起等审批（仅 `guard.mode = block`） | 不再直接拦截，批准后自动继续。**本机 `host.json` 目前是 `flag`（只审计），上线后行为不变** | 想用闸门：把 `guard.mode` 改回 `block`（或删掉该键）后重启；现在审批只需点一下，不再需要让 agent 重试 |
+| 用户图片入库前缩放 / 转码 | 超过模型限制的图被缩到限制内，坏图剔除并说明 | `PI_DURABLE_IMAGES=0` 关闭（原样透传） |
+| 优雅停止不再一律中止当前 run | 只有真有调用在执行时才中止；挂起等审批的命令在热重启后继续等 | 无需调整 |
+| 用户主动中止的 run 不再生成体检记录 | 中止不是需要诊断的失败，此前每条都挂 empty-answer 噪音 | 无需调整 |
+| 新会话的思考档位跟随 pi 的 `defaultThinkingLevel` | 本机 pi 未配置 → 仍为 high | 顶栏 ⚙ 按会话调整 |
+| 顶栏多一个「⚙ 思考 · 档位」入口；侧栏多「系统事件」面板；分隔线上多「查看此前的对话」 | 纯增量 | — |
