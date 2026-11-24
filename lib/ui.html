@@ -44,6 +44,20 @@
   #approvalBody .mini { border: 1px solid var(--line); background: var(--paper); color: var(--soft); border-radius: 8px; padding: 3px 10px; font-size: 12px; cursor: pointer; margin-right: 6px; }
   #approvalBody .mini.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   #approvalBody .mini.danger { color: var(--red); border-color: #f2c4c0; }
+  /* 审批闸门（pi-durable 1.6 signals）：危险命令挂起等人工决定时的醒目状态 */
+  .badge.wait, .state.wait { background: var(--amber-bg); color: var(--amber); }
+  .badge.wait, .state.wait .dot { animation: cstate-pulse 1.2s ease-in-out infinite; }
+  .live-block.waiting { border-color: var(--amber); background: #fffaf0; }
+  .live-block.waiting .t { color: var(--amber); }
+  .approve-row { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; align-items: center; }
+  .approve-row .mini { border: 1px solid var(--line); background: var(--paper); color: var(--soft); border-radius: 8px; padding: 3px 10px; font-size: 12px; cursor: pointer; }
+  .approve-row .mini.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  .approve-row .mini.danger { color: var(--red); border-color: #f2c4c0; }
+  .approve-row .mini:hover { filter: brightness(.96); }
+  .ap-state { font-size: 11.5px; padding: 0 7px; border-radius: 999px; margin-left: 6px; white-space: nowrap; }
+  .ap-state.waiting { background: var(--amber-bg); color: var(--amber); font-weight: 600; }
+  .ap-state.ended, .ap-state.legacy { background: var(--line); color: var(--faint); font-weight: 400; }
+  #cwd { max-width: 300px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } /* 长路径不再把顶栏挤成两行 */
 
   .toolbar {
     display: flex; flex-wrap: wrap; gap: 8px; align-items: center; flex: none;
@@ -167,6 +181,7 @@
   .tool-card.err .tc-status { color: var(--red); }
   .tool-card.ok .tc-status { color: var(--green); }
   .tool-card.running .tc-status { color: var(--amber); }
+  .tool-card.sleeping .tc-status { color: var(--amber); font-weight: 700; }
   .tool-card .tc-body { border-top: 1px solid var(--line); padding: 6px 12px; }
   /* image block 渲染（issue #134）：read 图片返回的 base64 块，限高预览；点击灯箱全屏放大（issue #144） */
   .tool-img { display: block; max-width: 100%; max-height: 320px; border: 1px solid var(--line); border-radius: 8px; margin: 6px 0; cursor: zoom-in; }
@@ -652,8 +667,8 @@ function toolOutputHtml(blocks, entryId) {
 }
 
 function toolCardHtml(call, resultEntry, liveTool) {
-  const status = resultEntry ? (resultEntry.model?.[0]?.isError ? "err" : "ok") : liveTool ? (liveTool.status === "running" ? "running" : "") : "";
-  const label = { err: "❌ 出错", ok: "✅ 完成", running: "⏳ 运行中", "": "· 等待" }[status];
+  const status = resultEntry ? (resultEntry.model?.[0]?.isError ? "err" : "ok") : liveTool ? (liveTool.status === "running" ? "running" : liveTool.status === "sleeping" ? "sleeping" : "") : "";
+  const label = { err: "❌ 出错", ok: "✅ 完成", running: "⏳ 运行中", sleeping: "⏸ 等待审批", "": "· 等待" }[status];
   const dur = resultEntry?.model?.[0]?.durationMs;
   const argObj = call.arguments ?? {};
   const args = JSON.stringify(argObj);
@@ -735,7 +750,9 @@ function liveTailHtml(ctx) {
     if (parts.length) body += `<div class="msg agent stream"><div class="bubble">${parts.join("")}<div class="muted">✍ 生成中（第 ${gen.attempt + 1} 次）${gen.retry ? ` · 重试: ${esc(gen.retry.error)}` : ""}</div></div></div>`;
   }
   for (const t of ctx.live.tools ?? []) {
-    if (ctx.resultIndex.has(t.callId)) continue;
+    // 已出结果的不再画；所在 assistant 条目已落账的也不画——那张卡已在原地渲染并带实时状态（liveToolByCall），
+    // 尾部再画一张就是重复：工具一挂起几分钟（审批闸门），对话流里就会出现两张一模一样的卡
+    if (ctx.resultIndex.has(t.callId) || ctx.callIndex.has(t.callId)) continue;
     // 参数优先取工具 details（部分工具会上报），否则回退到已提交 assistant 条目的 toolCall 块：
     // 否则运行中卡片只剩「🛠 bash ⏳ 运行中 + 参数 {}」，看不到在执行什么命令。
     const committed = ctx.callIndex.get(t.callId);
@@ -821,14 +838,25 @@ function render(view) {
   const live = view.docs?.["pi.live"] ?? {};
   const busy = Boolean(live.run);
   uiBusy = busy;
+  // 审批闸门：当前会话有工具调用挂起等人工决定（pi-durable 1.6 signals）→ 状态徽标直接变成「等待审批」，
+  // 比「运行中」准确得多：此时 agent 什么都没做，在等人。
+  const pendingByTask = new Map(approvals.pending.filter((p) => p.state === "waiting").map((p) => [String(p.taskId), p]));
+  const waitingApproval = (live.tools ?? []).find((t) => t.status === "sleeping" && pendingByTask.has(String(t.taskId)));
+  const waitingHere = Boolean(waitingApproval);
+  // 挂起槽出现/消失时立即刷新审批清单（不等 5s 轮询）：挂起瞬间 pending 可能还没取到
+  const sig = (live.tools ?? []).filter((t) => t.status === "sleeping").map((t) => String(t.taskId)).join(",");
+  if (sig !== sleepSig) { sleepSig = sig; if (sig) void refreshApprovals().then(rerender).catch(() => {}); }
+  const stateText = busy ? (waitingHere ? "等待审批" : "运行中") : "空闲";
   const st = $("status");
-  st.textContent = busy ? "运行中" : "空闲";
-  st.className = "badge " + (busy ? "busy" : "idle");
+  st.textContent = stateText;
+  st.className = "badge " + (busy ? (waitingHere ? "wait" : "busy") : "idle");
+  st.title = waitingHere ? `有命令被 host-guard 挂起，等待你在「审批」面板或实时区批准/拒绝：${waitingApproval ? pendingByTask.get(String(waitingApproval.taskId))?.command : ""}` : "";
   $("btnAbort").disabled = !busy;
   // 同步输入区状态胶囊与发送按钮文案（忙时发送变为“排队”）
   const cstate = $("cstate");
-  cstate.className = "state " + (busy ? "busy" : "idle");
-  $("cstateText").textContent = busy ? "运行中" : "空闲";
+  cstate.className = "state " + (busy ? (waitingHere ? "wait" : "busy") : "idle");
+  $("cstateText").textContent = stateText;
+  updateTitle();
   $("btnSendLabel").textContent = busy ? "排队" : "发送";
   $("btnSend").title = busy ? "正在运行：发送将自动排队为 follow-up" : "发送（忙时自动排队为 follow-up）";
 
@@ -899,6 +927,7 @@ function render(view) {
 
   const t = $("transcript");
   const nearBottom = t.scrollHeight - t.scrollTop - t.clientHeight < 160;
+  if (groups.length) for (const el of [...t.children]) if (!el.dataset.key && !el.dataset.nomatch) el.remove(); // 清掉首屏占位「（加载中…）」（无 key 的子节点不参与结构对账）
 
   if (!groups.length) {
     runEls.clear();
@@ -990,6 +1019,12 @@ function render(view) {
     }
     // 本轮工具调用（此前只看得到生成/压缩/嵌套，顶层 bash 等长任务在侧栏完全不可见）
     for (const tool of live.tools ?? []) {
+      const ap = tool.status === "sleeping" ? pendingByTask.get(String(tool.taskId)) : undefined;
+      if (ap) {
+        // 审批闸门：这条调用挂起等人决定。命令 + 一键批准/拒绝直接出现在实时区，不用去翻侧栏
+        html += `<div class="live-block waiting"><div class="t">⏸ 🛠 ${esc(tool.name)} · 等待审批（run 已挂起）</div><div class="kv"><b>${esc(ap.why ?? "危险命令")}</b> · 批准后自动执行，拒绝则以拦截结果结束</div><pre class="code">${esc(ap.command)}</pre><div class="approve-row"><button class="mini primary" data-approve="${esc(ap.command)}">批准并继续</button><button class="mini danger" data-dismiss="${esc(ap.command)}">拒绝</button></div></div>`;
+        continue;
+      }
       // pi-durable 1.4/1.6：槽状态新增 sleeping（定时休眠，不占调用）/ waiting（等子任务）
       const slotLabel = { running: "运行中", done: "已结束（落账中）", sleeping: "休眠等待", waiting: "等待子任务" }[tool.status] ?? "排队";
       const mark = tool.status === "running" ? "⏳" : tool.status === "done" ? "·" : tool.status === "sleeping" ? "⏰" : "…";
@@ -1669,7 +1704,8 @@ function renderSessions(payload) {
   }
   const sel = $("sessionSel");
   sel.innerHTML = payload.sessions.map((s) => `<option value="${esc(s.name)}"${s.name === payload.current ? " selected" : ""}>${esc(s.name)}</option>`).join("");
-  document.title = `Pi Durable · ${payload.current}`;
+  currentSessionName = payload.current;
+  updateTitle();
 }
 async function loadSessions() { try { renderSessions(await api("/api/sessions")); } catch {} }
 $("sessionSel").onchange = async () => {
@@ -1721,22 +1757,57 @@ $("modelSel").onchange = async () => {
 };
 
 let approvalsHtml = "";
+let approvals = { approved: [], pending: [] }; // /api/approvals 的最近一次结果；pending[].state: waiting（调用挂起中）/ ended / legacy / unknown
+let sleepSig = ""; // 挂起工具槽的指纹（见 render）
+let currentSessionName = "";
+/** 标题里的「⏸ 待审批」标记：任何会话有命令挂起等决定时都带上（切到别的标签页/会话也一眼可见） */
+function updateTitle() {
+  const waiting = approvals.pending.some((p) => p.state === "waiting");
+  document.title = `${waiting ? "⏸ 待审批 · " : ""}Pi Durable · ${currentSessionName}`;
+}
+/** 审批面板 / 实时区里的批准、拒绝、撤销、清空（共用的委派处理） */
+async function approvalAction(btn) {
+  try {
+    if (btn.dataset.approve) {
+      const r = await api("/api/approve", { method: "POST", body: JSON.stringify({ command: btn.dataset.approve }) });
+      toast(r.woke === "delivered" ? "已批准 · agent 自动继续执行" : "已加入批准清单（发起它的调用已不在等待，下次执行时放行）", "ok");
+    } else if (btn.dataset.dismiss) {
+      const r = await api("/api/approvals/dismiss", { method: "POST", body: JSON.stringify({ command: btn.dataset.dismiss }) });
+      toast(r.woke === "delivered" ? "已拒绝 · agent 收到拦截结果" : "已忽略", "info");
+    } else if (btn.dataset.revoke) {
+      await api("/api/approve/revoke", { method: "POST", body: JSON.stringify({ index: +btn.dataset.revoke }) });
+    } else if (btn.dataset.clearApproved) {
+      await api("/api/approvals/clear", { method: "POST", body: "{}" }); toast("已批准清单已清空", "ok");
+    } else return;
+    approvalsHtml = ""; await refreshApprovals();
+  } catch (err) { toast(err.message); }
+}
 async function refreshApprovals() {
   try {
-    const { approved, pending } = await api("/api/approvals");
+    const data = await api("/api/approvals");
+    approvals = data;
+    const { approved, pending } = data;
+    updateTitle();
     const panel = $("approvalPanel");
     if (!pending.length && !approved.length) { panel.style.display = "none"; approvalsHtml = ""; setPanelBadge("approvalPanel", 0); return; }
     let html = "";
-    if (pending.length) html += `<div class="muted" style="margin-bottom:4px">待批（被拦下等待处理）</div>`;
+    const waiting = pending.filter((p) => p.state === "waiting").length;
+    if (pending.length) html += `<div class="muted" style="margin-bottom:4px">${waiting ? `待批 · <b style="color:var(--amber)">${waiting} 条命令正挂起等你的决定</b>（批准后 agent 自动继续执行）` : "待批（被拦下等待处理）"}</div>`;
     for (const item of pending) {
-      html += `<div class="kv"><b>⛔ ${esc(item.why ?? "危险命令")}</b> · ${esc(item.blockedAt ?? "")}
+      const state = item.state === "waiting"
+        ? `<span class="ap-state waiting" title="工具调用已挂起：批准即自动执行，拒绝则以拦截结果结束">⏸ run 已挂起</span>`
+        : item.state === "ended"
+          ? `<span class="ap-state ended" title="发起它的调用已结束（中止或超时）：批准只进清单，下次执行时放行">调用已结束</span>`
+          : item.state === "unknown" ? "" : `<span class="ap-state legacy" title="拦截时没有挂起的调用：批准后 agent 下次执行时放行">仅记录</span>`;
+      const time = String(item.blockedAt ?? "");
+      html += `<div class="kv"><b>⛔ ${esc(item.why ?? "危险命令")}</b>${state} · <span class="muted">${esc(time ? time.slice(11, 19) : "")}</span>
         <pre class="code">${esc(item.command)}</pre>
-        <button class="mini primary" data-approve="${esc(item.command)}">批准</button><button class="mini" data-dismiss="${esc(item.command)}">忽略</button></div>`;
+        <div class="approve-row"><button class="mini primary" data-approve="${esc(item.command)}">${item.state === "waiting" ? "批准并继续" : "加入批准清单"}</button><button class="mini danger" data-dismiss="${esc(item.command)}">${item.state === "waiting" ? "拒绝" : "忽略"}</button></div></div>`;
     }
     if (approved.length) {
       html += `<div class="muted" style="margin:8px 0 4px">已批准（精确匹配） <button class="mini danger" data-clear-approved="1">全部清空</button></div>`;
       for (const [i, item] of approved.entries()) {
-        html += `<div class="kv">✅ <code class="md-inline">${esc(item.command)}</code> <button class="mini danger" data-revoke="${i + 1}">撤销</button></div>`;
+        html += `<div class="kv"><div class="approve-row" style="margin-top:2px"><span>✅ <code class="md-inline">${esc(item.command)}</code></span><button class="mini danger" data-revoke="${i + 1}">撤销</button></div></div>`;
       }
     }
     if (html === approvalsHtml) return;
@@ -1746,18 +1817,10 @@ async function refreshApprovals() {
     setPanelBadge("approvalPanel", pending.length);
   } catch {}
 }
-$("approvalBody").addEventListener("click", async (ev) => {
-  const btn = ev.target.closest("button");
-  if (!btn) return;
-  try {
-    if (btn.dataset.approve) { await api("/api/approve", { method: "POST", body: JSON.stringify({ command: btn.dataset.approve }) }); toast("已批准，可让 agent 重试原命令", "ok"); }
-    else if (btn.dataset.dismiss) { await api("/api/approvals/dismiss", { method: "POST", body: JSON.stringify({ command: btn.dataset.dismiss }) }); }
-    else if (btn.dataset.revoke) { await api("/api/approve/revoke", { method: "POST", body: JSON.stringify({ index: +btn.dataset.revoke }) }); }
-    else if (btn.dataset.clearApproved) { await api("/api/approvals/clear", { method: "POST", body: "{}" }); toast("已批准清单已清空", "ok"); }
-    approvalsHtml = ""; await refreshApprovals();
-  } catch (err) { toast(err.message); }
-});
+$("approvalBody").addEventListener("click", (ev) => { const btn = ev.target.closest("button"); if (btn) approvalAction(btn); });
+$("liveBody").addEventListener("click", (ev) => { const btn = ev.target.closest("button[data-approve],button[data-dismiss]"); if (btn) approvalAction(btn); });
 setInterval(refreshApprovals, 5000);
+void refreshApprovals();
 // ---------- 侧栏面板折叠 ----------
 const sideCollapsed = new Set(JSON.parse(localStorage.getItem("sideCollapsed") ?? "[]"));
 function applyPanelCollapsed(p) {

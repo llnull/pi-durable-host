@@ -34,13 +34,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { acquireLock, releaseLock } from "./lib/lock.js";
 import { buildDataset } from "./lib/dataset.js";
-import { buildGuard, buildProjectContext, buildScreen, SubagentExtension } from "./lib/extensions.js";
+import { ApprovalDecision, DEFAULT_APPROVAL_TIMEOUT_MS, buildGuard, buildProjectContext, buildScreen, SubagentExtension } from "./lib/extensions.js";
 import { createJudge } from "./lib/judge.js";
 import { openModelLayer } from "./lib/models.js";
 import { startServer } from "./lib/server.js";
 import { detectDaemon, daemonApi } from "./lib/daemon.js";
 import { collectStatus, printHistory, printStatus, readTaskGraph, readView, textOf } from "./lib/format.js";
-import { approveCommand, pendingFileOf, readApprovals, readPending, revokeApprovalAt } from "./lib/approvals.js";
+import { approveCommand, clearPending, findPending, isApproved, pendingFileOf, readApprovals, readPending, revokeApprovalAt } from "./lib/approvals.js";
 import { backupStorageFile, rotateLog } from "./lib/backup.js";
 import { DEFAULT_SESSION, assertSessionName, readSessions, sessionsFile, sessionConversationId, writeSessions } from "./lib/sessions.js";
 
@@ -117,6 +117,11 @@ function featureOn(envKey, fileKey, def) {
 const bashTimeoutRaw = Number(cfgOr("PI_DURABLE_BASH_TIMEOUT", "bash", "timeout") ?? 300);
 const BASH_TIMEOUT = Number.isFinite(bashTimeoutRaw) && bashTimeoutRaw >= 0 ? bashTimeoutRaw : 300;
 
+// 审批闸门的等待上限（秒）：危险命令挂起等人工决定，超过即拦截并提示重新发起，不让 run 无限期挂着。
+// 默认一天；env PI_DURABLE_APPROVAL_TIMEOUT 优先于 host.json guard.approvalTimeoutSec（测试时可调短）。
+const approvalTimeoutRaw = Number(cfgOr("PI_DURABLE_APPROVAL_TIMEOUT", "guard", "approvalTimeoutSec"));
+const APPROVAL_TIMEOUT_MS = Number.isFinite(approvalTimeoutRaw) && approvalTimeoutRaw > 0 ? approvalTimeoutRaw * 1000 : DEFAULT_APPROVAL_TIMEOUT_MS;
+
 async function buildRegistry() {
 	const registry = createRegistry();
 	// pi-durable 1.2.0：read 可将图片作为图片块返回。无 processor 时按模型限制原样透传；
@@ -132,7 +137,7 @@ async function buildRegistry() {
 	}
 	registry.install(createCodingTools(images ? { images } : {}));
 	registry.install(buildProjectContext()); // injects workspace AGENTS.md when present
-	registry.install(buildGuard({ approvalsFile: APPROVALS_FILE, timingLog: TIMING_LOG, judge: JUDGE, mode: cfgOr("PI_DURABLE_GUARD", "guard", "mode") ?? "block", bashTimeout: BASH_TIMEOUT }));
+	registry.install(buildGuard({ approvalsFile: APPROVALS_FILE, timingLog: TIMING_LOG, judge: JUDGE, mode: cfgOr("PI_DURABLE_GUARD", "guard", "mode") ?? "block", bashTimeout: BASH_TIMEOUT, approvalTimeoutMs: APPROVAL_TIMEOUT_MS }));
 	if (SCREEN) {
 		const hostScreen = buildScreen({
 			judge: JUDGE, mode: SCREEN_MODE,
@@ -355,7 +360,13 @@ async function cmdAsk(args) {
 		console.error(
 			`[submitted ${submission.id}${reused ? " · 已存在的提交，直接复用（--fresh 可强制新提交）" : " · waiting for the run to settle"}]`,
 		);
-		const settled = await submission.wait(context);
+		const stopWake = watchLocalApprovals(harness); // 本地直连没有 daemon 代投审批信号：这里代投
+		let settled;
+		try {
+			settled = await submission.wait(context);
+		} finally {
+			stopWake();
+		}
 		if (settled.status === "done" && settled.type === "input") {
 			const entry = await conv.commit((tx) => tx.entry(AssistantEntry, settled.answer), context);
 			console.log(textOf(entry?.model?.[0]));
@@ -366,6 +377,32 @@ async function cmdAsk(args) {
 	} finally {
 		await harness.close(context);
 	}
+}
+
+/**
+ * 本地直连模式（没有 daemon，`ask` 前台等待）下的审批唤醒：危险命令的调用挂起等待信号，而信号只能由持有
+ * Harness 的进程投递——也就是这个 `ask` 进程。每 2s 扫一次待批清单，发现命令已进批准清单
+ * （用户在另一个终端跑了 `node host.js approve -- <cmd>`）即投递「同意」；调用已不在的条目顺手清掉。
+ * daemon 模式不需要：/api/approve 自己投递。
+ */
+function watchLocalApprovals(harness) {
+	const pending = pendingFileOf(APPROVALS_FILE);
+	const timer = setInterval(() => {
+		let items = [];
+		try { items = readPending(pending); } catch { return; }
+		for (const item of items) {
+			if (item.taskId === undefined || !item.key) continue;
+			if (!isApproved(APPROVALS_FILE, item.command)) continue;
+			harness.signal(item.taskId, ApprovalDecision, item.key, { allow: true, by: "cli" }, BACKGROUND_CONTEXT).then(
+				(woke) => {
+					if (woke === "delivered") console.error(`[guard] ${item.command.slice(0, 80)} 已批准，唤醒等待中的调用`);
+					clearPending(pending, item.command); // 条目由批准方清（闸门在清单命中时直接放行，不会走到自己的清理分支）
+				},
+				() => {},
+			);
+		}
+	}, 2000);
+	return () => clearInterval(timer);
 }
 
 async function cmdContext(args) {
@@ -632,8 +669,8 @@ async function cmdApprove(args) {
 		}
 		const command = args.join(" ").trim();
 		if (!command) throw new Error("usage: node host.js approve -- <command>");
-		await daemonApi(daemon, "POST", "/api/approve", { command });
-		console.log("approved:", command);
+		const r = await daemonApi(daemon, "POST", "/api/approve", { command });
+		console.log("approved:", command, r.woke === "delivered" ? "（已唤醒等待中的调用，agent 自动继续执行）" : "");
 		return;
 	}
 	if (args[0] === "--list") {
@@ -657,8 +694,11 @@ async function cmdApprove(args) {
 		process.exitCode = 2;
 		return;
 	}
+	const entry = findPending(pendingFileOf(APPROVALS_FILE), command);
 	approveCommand(APPROVALS_FILE, command);
-	console.log("approved:", command);
+	// 有挂起调用的条目留给前台 ask 进程（watchLocalApprovals）唤醒后清；其余没人清，这里清
+	if (entry && entry.taskId === undefined) clearPending(pendingFileOf(APPROVALS_FILE), command);
+	console.log("approved:", command, entry?.taskId !== undefined ? "（等待中的调用会在 2s 内被唤醒；需有前台 ask 在跑）" : "");
 }
 
 function printApprovals(approved, pending) {

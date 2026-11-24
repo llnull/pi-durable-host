@@ -28,7 +28,7 @@ node host.js ask "列出本目录结构"   # 或者直接 CLI 提问
 - **codemode**（pi-durable 1.2.0，opt-in）：`PI_DURABLE_CODEMODE=1` 启用后 agent 可写 JS 脚本在 QuickJS 沙箱里批量调工具（嵌套调用），脚本崩溃后跨重启确定性回放
 - **分叉重试**：从任意提问分叉出新会话换说法重问，原会话不变
 - **上下文调试**：查看任意条目处模型实际看到的 context
-- **危险命令审批**：guard 拦截 + 待批清单 + 一键批准
+- **危险命令审批**：危险命令不执行而是**挂起等人工决定**（pi-durable 1.6 信号/闸门，跨重启存活）；Web UI / CLI 一键「批准并继续」，批准后 agent 自动接着跑，无需重试
 - **judge 体检**：Jev-like 类型化判断接入控制面——每个 run 结束自动体检（工具错误/空回答/连败）+ 全量审计日志，异常 run 徽标提示可分叉重试
 - **可观测**：实时任务图、工具耗时、用量（按模型分 tokens 与金额）
 - **运维**：`VACUUM INTO` 在线备份、热重启、日志轮转、大响应 gzip
@@ -82,6 +82,7 @@ host 不维护自己的模型配置——直接读 pi CLI 的 `~/.pi/agent/`，�
 | `PI_DURABLE_IMAGES` | `read` 图片支持（默认开）；设 `0` 关闭 Photon 预处理，图片仍按模型限制原样透传 |
 | `PI_DURABLE_CODEMODE` | codemode 工具（默认关）；设 `1` 启用（也可在 `data/host.json` 的 `features.codemode` 开） |
 | `PI_DURABLE_BASH_TIMEOUT` | bash 工具默认超时秒数（默认 `300`，`0` 关闭；也可在 `data/host.json` 的 `bash.timeout` 设）。模型未传 timeout 时注入，显式传更大值时封顶——防死循环命令无限挂死 run 与热重启（issue #147） |
+| `PI_DURABLE_APPROVAL_TIMEOUT` | 危险命令等待审批的上限秒数（默认 `86400`；也可在 `data/host.json` 的 `guard.approvalTimeoutSec` 设）。超时即拦截并提示重新发起 |
 
 sidecar 调参（`data/host.json` 的 `judge.sidecar` 段）：`probeTimeoutMs`（探活超时，默认 700）、`missesBeforeRestart`（进程活着但探活连续未过多少个周期才判死换血，默认 3——偶发慢不等于死亡，立即换血会掐死在途 judge 请求，issue #146）、`killWaitMs` / `escalateWaitMs`（换血时停旧等待与 SIGKILL 升级）。
 
@@ -137,7 +138,7 @@ node host.js config                              # 重置存储的 cwd/model 为
 | `POST /api/sessions` | `{ action: new\|switch\|delete, name }` |
 | `POST /api/fork` | `{ entryId, name? }` 从历史条目分叉新会话并切换 |
 | `POST /api/wait-idle` | `{ timeoutMs?, session? }` 等会话空闲（外部自动化动作前的一致性保证）；超时 `{ idle: false }` |
-| `POST /api/approve` / `/api/approve/revoke` / `/api/approvals/dismiss` | 审批管理 |
+| `POST /api/approve` / `/api/approve/revoke` / `/api/approvals/dismiss` | 审批管理（批准/忽略会唤醒挂起等待的调用，响应带 `woke`：`delivered` = 已唤醒） |
 | `POST /api/backup` / `POST /api/restart` | 在线备份 / 热重启 |
 | `GET /api/state[?light=1]` | 全量快照（light 仅元数据，1.2KB 级；全量的 image 块与 SSE 帧同为瘦身引用，原图走 `GET /api/entry-image`）；`GET /api/events` SSE 增量推送 |
 | `GET /api/history` / `/api/entry?id=` / `/api/submission?id=` | transcript 与提交记录 |
@@ -168,14 +169,21 @@ node host.js config                              # 重置存储的 cwd/model 为
 
 ### 危险命令审批（host-guard）
 
-bash 命令命中危险模式（`sudo`、`rm -r/-f`、`mkfs`、`dd of=/dev/*`、fork 炸弹、强制推送、磁盘抹除等）时被拦截：
-命令进 `data/approvals-pending.json` 待批清单，agent 收到含 escape hatch 的提示。批准途径：
+bash 命令命中危险模式（`sudo`、`rm -r/-f`、`mkfs`、`dd of=/dev/*`、fork 炸弹、强制推送、磁盘抹除等）时**不会执行**：
+这次工具调用挂起等待你的决定（pi-durable 1.6 的信号/闸门——不占进程、跨重启存活），命令进 `data/approvals-pending.json`
+待批清单。**批准后调用自动继续执行**，不需要让 agent 重试；拒绝则 agent 收到明确的拦截说明（并被要求不要换个写法绕过）。
 
-- Web UI 审批面板一键「批准 / 忽略」（待批数以徽标显示在面板标题）
-- CLI：`node host.js approve -- <命令>`（`--list` / `--revoke n`）
+批准途径：
+
+- Web UI：侧栏「实时运行」与「审批」面板都直接给出「批准并继续 / 拒绝」按钮；顶栏状态变为「等待审批」，标签页标题带 ⏸ 标记
+- CLI：`node host.js approve -- <命令>`（`--list` / `--revoke n`）——daemon 运行时经它唤醒调用；没有 daemon 的前台 `ask`
+  由该进程自己轮询批准清单并唤醒
 - 允许前缀通配：批准 `git push origin*` 放行所有以它开头的命令
 
-批准/撤销对运行中的 daemon 实时生效（guard 每次调用重读文件）；批准后让 agent 重试原命令即可。
+等待有上限（默认一天；`PI_DURABLE_APPROVAL_TIMEOUT` 秒或 `data/host.json` 的 `guard.approvalTimeoutSec`）：超时即拦截并提示
+重新发起，run 不会无限期挂着。挂起期间热重启不丢（优雅停止只在真有调用在执行时才中止 run，后继进程接着等）；
+点「中止」会连带取消挂起的调用（审批面板标为「调用已结束」，此时批准只进清单）。`guard.mode`：`block`（默认，闸门）/
+`flag`（只审计不拦截）/ `off`。撤销对运行中的 daemon 实时生效（guard 每次调用重读文件）。
 
 ### judge 体检（Jev-like 判断）
 
