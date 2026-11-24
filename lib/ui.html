@@ -58,6 +58,21 @@
   .ap-state.waiting { background: var(--amber-bg); color: var(--amber); font-weight: 600; }
   .ap-state.ended, .ap-state.legacy { background: var(--line); color: var(--faint); font-weight: 400; }
   #cwd { max-width: 300px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } /* 长路径不再把顶栏挤成两行 */
+  /* 会话设置弹层（思考档位 / 轮数上限 / 压缩策略） */
+  .pfield { margin: 12px 0; }
+  .pfield > label { display: block; font-weight: 600; font-size: 13px; margin-bottom: 5px; }
+  .pfield .muted { font-size: 12px; margin-top: 4px; }
+  .pfield select, .pfield input[type="number"] { font: inherit; font-size: 13px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); width: 120px; }
+  .pfield select { width: auto; min-width: 130px; }
+  .pfield .inline { display: flex; gap: 16px; flex-wrap: wrap; align-items: center; }
+  .pfield .inline label { display: inline-flex; gap: 6px; align-items: center; font-weight: 400; font-size: 12.5px; color: var(--soft); }
+  .pfield input[type="checkbox"] { width: auto; accent-color: var(--accent); }
+  .pfoot { display: flex; gap: 8px; justify-content: flex-end; align-items: center; margin-top: 14px; }
+  .pfoot .spacer { flex: 1; }
+  .pfield .mini, .pfoot .mini { border: 1px solid var(--line); background: var(--paper); color: var(--soft); border-radius: 8px; padding: 4px 12px; font-size: 12.5px; cursor: pointer; }
+  .pfoot .mini.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  .pfoot .mini.danger { color: var(--red); border-color: #f2c4c0; }
+  .pfield .mini:hover, .pfoot .mini:hover { filter: brightness(.96); }
 
   .toolbar {
     display: flex; flex-wrap: wrap; gap: 8px; align-items: center; flex: none;
@@ -331,6 +346,7 @@
   <button id="btnNewSession" title="新建会话">＋</button>
   <button id="btnDelSession" title="删除当前会话（default 除外）">🗑</button>
   <select id="modelSel" title="模型"></select>
+  <button id="btnPolicy" title="会话设置：思考档位 / 单次 run 的工具轮数上限 / 压缩策略（只影响当前会话，持久生效）">⚙ <span id="thinkBadge">思考 · 默认</span></button>
   <span id="cwd" class="badge dim"></span>
   <span class="spacer"></span>
   <span id="conn" class="badge dim">连接中…</span>
@@ -422,6 +438,12 @@
   <div class="modal">
     <div class="modal-head"><span id="ctxTitle">上下文</span><button class="ctx-btn" id="ctxClose" style="opacity:1;font-size:16px">✕</button></div>
     <div class="modal-body" id="ctxBody"></div>
+  </div>
+</div>
+<div id="policyModal" class="modal-mask" style="display:none">
+  <div class="modal" style="max-width:620px">
+    <div class="modal-head"><span>会话设置</span><button class="ctx-btn" id="policyClose" style="opacity:1;font-size:16px">✕</button></div>
+    <div class="modal-body" id="policyBody"></div>
   </div>
 </div>
 
@@ -874,6 +896,7 @@ function render(view) {
     modelSel.dataset.known = id;
   }
   $("cwd").textContent = agent.cwd ?? "";
+  $("thinkBadge").textContent = `思考 · ${thinkLabel(agent.thinkingLevel)}`;
 
   const entries = (view.entries ?? []).filter((e) => e.kind !== "head");
   const resultIndex = new Map();
@@ -1012,6 +1035,7 @@ function render(view) {
   if (busy || (live.tools ?? []).length || live.compactions?.length || live.compactionFailure || live.runFailure || (live.nestedTools ?? []).length) {
     lp.style.display = "";
     let html = "";
+    if (busy && live.run) html += `<div class="kv">⏱ 第 ${live.run.turns + 1} 轮${agent.maxTurns ? ` / 上限 ${agent.maxTurns}` : ""}</div>`;
     if (gen) {
       html += `<div class="live-block"><div class="t">生成中（第 ${gen.attempt + 1} 次尝试）</div>`;
       for (const b of asBlocks(gen.message?.content)) {
@@ -1753,7 +1777,9 @@ $("btnDelSession").onclick = async () => {
 
 async function loadModels() {
   try {
-    const { source, default: def, providers } = await api("/api/models");
+    const { source, default: def, providers, compaction } = await api("/api/models");
+    modelCatalog = providers ?? [];
+    if (compaction) harnessCompaction = compaction;
     const sel = $("modelSel");
     const provs = providers?.length ? providers : [{ id: def.provider, kind: "credential", models: [] }];
     const kindLabel = { custom: "自定义", credential: "凭证" };
@@ -1773,6 +1799,72 @@ async function loadModels() {
     sel.dataset.loaded = "1";
   } catch {}
 }
+// ---------- 会话设置（pi-durable 1.4 / 1.5：思考档位 / 单次 run 工具轮数上限 / 压缩策略；只影响当前会话，持久生效） ----------
+const THINK_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+const THINK_LABELS = { off: "关闭", minimal: "极简", low: "低", medium: "中", high: "高", xhigh: "极高", max: "最大" };
+let modelCatalog = []; // /api/models 的 providers：查当前模型支持的思考档位（thinkingLevelMap）
+let harnessCompaction = { enabled: true, reserveTokens: 16384, keepRecentTokens: 20000, backgroundTokens: 32768 }; // /api/models 会覆盖
+const thinkLabel = (level) => THINK_LABELS[level] ?? String(level ?? "默认");
+const levelsFor = (agent) => {
+  const p = modelCatalog.find((x) => x.id === agent?.model?.provider);
+  const m = p?.models?.find((x) => x.id === agent?.model?.modelId);
+  return m?.thinkingLevels?.length ? m.thinkingLevels : THINK_LEVELS;
+};
+const closePolicy = () => { $("policyModal").style.display = "none"; };
+function openPolicy() {
+  const agent = uiView?.docs?.["pi.agent"] ?? {};
+  const levels = levelsFor(agent);
+  const cur = agent.thinkingLevel;
+  const options = [...new Set([...(cur ? [cur] : []), ...levels])].map((l) => `<option value="${esc(l)}"${l === cur ? " selected" : ""}>${esc(thinkLabel(l))}${levels.includes(l) ? "" : "（当前模型不支持）"}</option>`).join("");
+  const hc = harnessCompaction;
+  const c = { ...hc, ...(agent.compaction ?? {}) };
+  $("policyBody").innerHTML = `
+    <div class="pfield"><label>思考档位</label>
+      <select id="pThink">${options}</select>
+      <div class="muted">推理深度与费用；可选档位由模型的 thinkingLevelMap 决定。当前：${cur ? esc(thinkLabel(cur)) : "模型默认"} · 支持：${esc(levels.map(thinkLabel).join(" / "))}</div></div>
+    <div class="pfield"><label>单次 run 的工具轮数上限</label>
+      <input id="pTurns" type="number" min="1" step="1" placeholder="不限" value="${agent.maxTurns ?? ""}">
+      <div class="muted">到达上限的那一轮仍会执行工具，随后 run 以「轮数上限」结束、没有回答。留空 = 不限。</div></div>
+    <div class="pfield"><label>压缩策略</label>
+      <div class="inline"><label><input id="pCompOn" type="checkbox"${c.enabled ? " checked" : ""}> 启用自动压缩</label>
+        <label>预留 <input id="pReserve" type="number" min="0" step="1000" value="${c.reserveTokens}"></label>
+        <label>保留近期 <input id="pKeep" type="number" min="0" step="1000" value="${c.keepRecentTokens}"></label>
+        <label>后台阈值 <input id="pBg" type="number" min="0" step="1000" value="${c.backgroundTokens}"></label></div>
+      <div class="muted">单位 tokens。harness 默认：预留 ${hc.reserveTokens} / 保留近期 ${hc.keepRecentTokens} / 后台 ${hc.backgroundTokens}；小窗口模型可调低后台阈值。</div></div>
+    <div class="pfoot"><button class="mini danger" id="pResetAll">全部恢复默认</button><span class="spacer"></span><button class="mini" id="pCancel">取消</button><button class="mini primary" id="pSave">保存</button></div>`;
+  $("pCancel").onclick = closePolicy;
+  $("pResetAll").onclick = async () => {
+    try { await api("/api/config", { method: "POST", body: JSON.stringify({ thinkingLevel: null, maxTurns: null, compaction: null }) }); toast("已恢复默认（跟随 pi / host 设置）", "ok"); closePolicy(); }
+    catch (err) { toast("恢复失败：" + err.message); }
+  };
+  $("pSave").onclick = async () => {
+    // 只提交改动的字段（与当前 agent 文档逐项比较），避免把没动的项写一遍
+    const body = {};
+    const think = $("pThink").value;
+    if (levels.includes(think) && think !== cur) body.thinkingLevel = think;
+    const turns = $("pTurns").value.trim();
+    const turnsN = turns === "" ? null : Number(turns);
+    if (turnsN !== (agent.maxTurns ?? null)) body.maxTurns = turnsN;
+    const want = { enabled: $("pCompOn").checked, reserveTokens: Number($("pReserve").value), keepRecentTokens: Number($("pKeep").value), backgroundTokens: Number($("pBg").value) };
+    const diff = {};
+    for (const k of Object.keys(want)) if (want[k] !== c[k]) diff[k] = want[k];
+    if (Object.keys(diff).length) body.compaction = diff;
+    if (!Object.keys(body).length) { closePolicy(); toast("没有改动", "info"); return; }
+    const btn = $("pSave"); btn.disabled = true;
+    try {
+      await api("/api/config", { method: "POST", body: JSON.stringify(body) });
+      const said = [body.thinkingLevel ? `思考档位 → ${thinkLabel(body.thinkingLevel)}` : "", body.maxTurns !== undefined ? `轮数上限 → ${body.maxTurns ?? "不限"}` : "", body.compaction ? "压缩策略已更新" : ""].filter(Boolean).join(" · ");
+      toast(`已保存：${said}`, "ok");
+      closePolicy();
+    } catch (err) { toast("保存失败：" + err.message); }
+    finally { btn.disabled = false; }
+  };
+  $("policyModal").style.display = "flex";
+}
+$("btnPolicy").onclick = openPolicy;
+$("policyClose").onclick = closePolicy;
+$("policyModal").addEventListener("click", (ev) => { if (ev.target === $("policyModal")) closePolicy(); });
+
 $("modelSel").onchange = async () => {
   const sel = $("modelSel");
   const provider = sel.selectedOptions[0]?.dataset.provider || sel.dataset.provider;
