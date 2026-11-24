@@ -19,7 +19,7 @@
 | `lib/server.js` | 常驻 daemon：HTTP + SSE 增量推送 + REST API |
 | `lib/ui.html` | Web UI（单文件，无构建步骤；单 script 块） |
 | `lib/models.js` | 模型层（复用 `~/.pi/agent` 配置；PI_DURABLE_PROVIDER → settings → models.json → auth.json 选型） |
-| `lib/extensions.js` | 自建扩展：host-project-context（AGENTS.md 注入）/ host-guard（审批流）/ host-team（subagent 工具） |
+| `lib/extensions.js` | 自建扩展：host-project-context（AGENTS.md 注入）/ host-guard（审批闸门 + 计时 wrap）/ host-screen（工具结果护栏）/ host-team（subagent 工具） |
 | `lib/sessions.js` | 命名会话 ↔ conversation 映射 |
 | `lib/approvals.js` | 批准/待批清单（guard / CLI / daemon / UI 共用；tmp-file + rename 原子写） |
 | `lib/judge.js` | judge 子系统（issue #70）：三原语 noul/choice/score + provider 抽象（heuristic 内置 / system-one HTTP）+ 降级 + 审计 |
@@ -91,6 +91,24 @@ daemon 在 SIGINT/SIGTERM 处理器旁注册 `harness.closed` 观察（Harness e
 优先于 host.json features 段。两者都动态 import：Photon wasm 与 quickjs wasm 只在启用时加载。
 images 初始化失败降级为原样透传（图片仍按模型限制返回），codemode 启用失败仅告警不阻塞启动——
 与 judge 降级同一条原则：新特性永远不成为可用性单点。
+
+### 审批闸门（host-guard，pi-durable 1.6 signals）
+
+`guard.mode = "block"` 下，危险命令不再被直接拦截成错误结果，而是 `beforeTool` 钩子返回 `{ sleep: { signals, until } }`：
+调用挂起（不占调用、跨重启存活），等人工决定。机制：
+
+- 信号 `ApprovalDecision = defineSignal({ name: "host-guard.approval", schema: { allow, by?, note? } })`；
+  key = 命令原文的 sha256 摘要（一条命令一个问题）；截止时间经 `api.memo` 记在任务上（一个问题一个 deadline，唤醒不滚动）。
+- 每次唤醒（信号送达 / 重开 Harness / 注册表变化）钩子**从头重跑**：命令已在批准清单 → 顶部判放行；否则读信号：
+  同意 → 放行；拒绝 / 超时 → `{ block }` 并说明；没有决定（外部唤醒）→ 再次挂起。钩子的副作用因此必须幂等
+  （`addPending` 重复登记保留首次拦截时间）。
+- 待批条目 `data/approvals-pending.json` 携带 `taskId` / `key`：daemon 的 `/api/approve`、`/api/approvals/dismiss` 用
+  `harness.signal()` 投递决定；无 daemon 的前台 `ask` 由 `watchLocalApprovals` 轮询批准清单代投。
+  待批条目由**批准方**清——命令进清单后钩子在顶部就返回，走不到它自己的清理分支。
+- `GET /api/approvals` 用任务图缓存给每条待批标状态：`waiting`（调用仍挂起）/ `ended`（被中止、超时或已处理）/
+  `legacy`（升级前拦截留下的条目）。UI 据此决定按钮文案（批准并继续 / 加入批准清单）。
+- 优雅停止的例外：原策略先中止当前 run 再关存储（防死循环命令卡住关停，issue #147）；但没有调用真正在执行
+  （仅挂起 / 仅生成中）时不中止——否则等了半天审批的命令会在热重启时被判死。
 
 ### 审计条目（host.config）
 

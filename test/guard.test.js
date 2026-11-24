@@ -130,7 +130,11 @@ test("flag 模式：命令放行且不产生待批（避免无意义审批历史
 	const pendingFile = join(dir, "approvals-pending.json");
 	for (const mode of ["flag", "block"]) {
 		const guard = buildGuard({ approvalsFile, mode, judge: { noul: async () => ({ p: 0.5 }), provider: "stub" } });
-		await guard.hooks[0].handlers.beforeTool({ name: "bash", arguments: { command: "rm -rf /tmp/whatever" } });
+		// block 模式现在是审批闸门（pi-durable 1.6）：调用挂起等待信号，需要 HookApi（readSignal / memo / now / taskId）
+		const api = { taskId: 1, now: () => Date.now(), memo: async (_name, candidate) => candidate, readSignal: async () => undefined };
+		const r = await guard.hooks[0].handlers.beforeTool({ name: "bash", arguments: { command: "rm -rf /tmp/whatever" } }, api, {});
+		if (mode === "block") assert.ok(r?.sleep, "block 模式：挂起等待审批（而不是直接拦截）");
+		else assert.equal(r, undefined, "flag 模式：放行");
 	}
 	const pending = existsSync(pendingFile) ? readFileSync(pendingFile, "utf8") : "{}";
 	const items = JSON.parse(pending).items ?? [];
