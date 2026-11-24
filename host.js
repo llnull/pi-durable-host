@@ -26,7 +26,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { AssistantEntry, ToolResultEntry, createRegistry, Harness, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import { AssistantEntry, ToolResultEntry, createRegistry, defineExtension, Harness, hook, ROOT_CONVERSATION_ID, ToolTask } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
@@ -36,6 +36,7 @@ import { acquireLock, releaseLock } from "./lib/lock.js";
 import { buildDataset } from "./lib/dataset.js";
 import { ApprovalDecision, DEFAULT_APPROVAL_TIMEOUT_MS, buildGuard, buildProjectContext, buildScreen, SubagentExtension } from "./lib/extensions.js";
 import { createJudge } from "./lib/judge.js";
+import { createReportLog } from "./lib/reports.js";
 import { openModelLayer } from "./lib/models.js";
 import { startServer } from "./lib/server.js";
 import { detectDaemon, daemonApi } from "./lib/daemon.js";
@@ -76,6 +77,9 @@ const JUDGE = createJudge({
 	timeoutMs: (() => { const n = Number(envOr("PI_DURABLE_JUDGE_TIMEOUT", "timeout") ?? 0); return Number.isFinite(n) && n > 0 ? n : undefined; })(),
 	log: JUDGE_LOG,
 });
+// 系统事件（pi-durable 1.4+ onReport）：抛错的钩子/监听器、故障或被重启上限终止的任务、迁移失败、最终让 Session
+// 失败的存储错误——此前这些在 host 里完全不可见。内存环供 /api/reports 与 SSE，judge-log.jsonl 全量留痕。
+const REPORTS = createReportLog({ logFile: JUDGE_LOG });
 const SERVE_LOG = path.join(DATA_DIR, "serve.log");
 const WORKSPACE = path.join(HERE, "workspace");
 
@@ -161,6 +165,17 @@ async function buildRegistry() {
 			console.error("[features] codemode 启用失败（不阻塞启动）：", e?.message ?? e);
 		}
 	}
+	// 演练开关（PI_DURABLE_FAULT=hook）：装一个 afterTool 必抛错的扩展。上游对通用钩子链里抛错的钩子只上报
+	// extension_error、调用结果照常写入（注意 beforeTool 不同：它抛错 = 拦截该调用，闸门因此是失败即关闭的），
+	// 所以这个演练扩展唯一的副作用就是每次工具调用产生一条系统事件——用来随时演练
+	// onReport → /api/reports → SSE → UI 面板/提示 这条链路是否通（默认关闭）。
+	if (process.env.PI_DURABLE_FAULT === "hook") {
+		registry.install(defineExtension({
+			name: "host-fault-drill",
+			hooks: [hook(ToolTask, { afterTool: async () => { throw new Error("演练：host-fault-drill 故意抛错（PI_DURABLE_FAULT=hook）"); } })],
+		}));
+		console.error("[features] 已装入演练扩展 host-fault-drill（PI_DURABLE_FAULT=hook）：每次工具调用产生一条 extension_error 系统事件");
+	}
 	registry.install(SubagentExtension); // provides the `subagent` tool
 	return registry;
 }
@@ -175,6 +190,7 @@ async function openHarness({ takeover = false } = {}) {
 		{
 			models: MODEL_LAYER.models,
 			registry: await buildRegistry(),
+			onReport: REPORTS.onReport,
 			env: (target) =>
 				new NodeExecutionEnv({
 					cwd: target.cwd ?? WORKSPACE,
@@ -470,7 +486,7 @@ async function cmdStatus(args) {
 	try {
 		const root = await getRoot(harness);
 		const conv = await conversationFor(harness, root, session ?? DEFAULT_SESSION);
-		printStatus(await collectStatus({ harness, conv, modelSource: MODEL_LAYER.source, context }));
+		printStatus(await collectStatus({ harness, conv, modelSource: MODEL_LAYER.source, context, reports: REPORTS }));
 	} finally {
 		await harness.close(context);
 	}
@@ -861,6 +877,7 @@ async function cmdServe(args) {
 			defaultAgent: DEFAULT_AGENT,
 			judge: JUDGE,
 			screen: SCREEN,
+			reports: REPORTS,
 			routingAuto: envOr("PI_DURABLE_JUDGE_ROUTING", "routing") === "auto",
 			// jevlike 网关 sidecar（issue #110）：judge.url 指向本地网关时，由 daemon 托管其进程生命周期。
 			sidecarUrl: envOr("PI_DURABLE_JUDGE_URL", "url"),
