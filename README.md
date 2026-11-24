@@ -92,7 +92,7 @@ sidecar 调参（`data/host.json` 的 `judge.sidecar` 段）：`probeTimeoutMs`�
 ## Web UI（http://localhost:7600/）
 
 - **顶栏**：会话下拉（切换/新建/删除）、模型下拉（即改即生效）、备份、热重启、任务图/文件/压缩/重置入口
-- **对话流**：按 run 分组；工具调用卡片 call/result 配对渲染；markdown/表格/代码块；流式生成实时显示
+- **对话流**：按 run 分组；工具调用卡片 call/result 配对渲染；markdown/表格/代码块；流式生成实时显示。压缩 / 重置之前的对话不再看不到：分隔线上「查看此前的对话」分页加载，置顶为只读归档区（标明不在模型上下文里），加载时保持阅读位置
 - **分叉（⑂）**：悬停任意一条用户提问 → 气泡旁 **⑂** 按钮 → 确认后从该条目分叉出新会话并切换
   （`Conversation.fork`：上下文与 agent 配置复制到该处、provider 身份全新）。新会话里换个说法重问即「从此重试」，
   原会话不变。触屏设备按钮常显
@@ -144,6 +144,7 @@ node host.js config                              # 重置存储的 cwd/model 为
 | `GET /api/state[?light=1]` | 全量快照（light 仅元数据，1.2KB 级；全量的 image 块与 SSE 帧同为瘦身引用，原图走 `GET /api/entry-image`）；`GET /api/events` SSE 增量推送 |
 | `GET /api/history` / `/api/entry?id=` / `/api/submission?id=` | transcript 与提交记录 |
 | `GET /api/context?entryId=n` | 该条目处的模型上下文（消息摘要，防倾倒） |
+| `GET /api/entries?before=n&limit=50` | 活跃段之前的更早条目（`id < before`，时间正序，image 块为瘦身引用）；`hasMore` 表示还有更早 |
 | `GET /api/judge/log` / `GET /api/judge/checkups` | judge 判断审计尾览 / run 体检记录 |
 | `GET /api/status` / `/api/tasks` / `/api/usage` / `/api/models` / `/api/sessions` / `/api/approvals` / `/api/files` / `/api/commands` / `/api/reports` | 状态类只读端点（`/api/reports`：本次启动以来的系统事件，全量在 `data/judge-log.jsonl` 的 `type:"report"`） |
 | `GET /files/<path>` | 工作区静态文件（路径穿越防护） |

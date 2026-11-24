@@ -146,6 +146,17 @@ provider 会拒绝的坏图不进 transcript（否则此后的每次请求都会
 只补提醒（entry 仍保留图片，切到视觉模型后可达——issue #138 的既定取舍）；图片全部被剔除且用户没打字则拒绝提交。
 Photon 处理器由 `buildRegistry` 填入，同时装上 `createFitImagesExtension`（afterTool）兜住其余来源的工具图片。
 
+### 视图窗口、活跃段与归档回看
+
+pi-durable 1.5 起 `ConversationView.entries` 只是窗口（最新 50 条），完整历史仍在库里。daemon 用 `ConversationTranscript`
+补页（`lib/format.js` 的 `fillActiveView`），并按最新 head marker 的 `head` 裁出**活跃段**——与 1.3.0 视图的呈现范围逐条
+一致（真实数据核对过）。SSE 协议、UI、`/api/state` 的形状因此都不用变。
+
+活跃段之前的条目（已压缩 / 重置的对话）经 `GET /api/entries?before=<活跃段首条 id>` 分页回看（`conv.entries` 倒序取回、
+正序返回）；UI 把它们放在 `#transcript` 的第一个子节点（无 `data-key`，不参与 run 级结构对账），条目用同一套
+`entryHtml` 独立渲染。边界 = 活跃段首条：会话切换或出现新的分隔线时归档清空重来。在顶部补内容时按高度差校正
+`scrollTop`，正在阅读的位置不跳走。这是直读类端点，Session 线被长 run 占用时可能变慢，UI 侧带 30s 超时。
+
 ### 审计条目（host.config）
 
 `defineEntry("host.config")` 创建自定义 entry kind：无 `model` 字段 → `contribute()` 零贡献，
