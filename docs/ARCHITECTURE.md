@@ -23,6 +23,7 @@
 | `lib/sessions.js` | 命名会话 ↔ conversation 映射 |
 | `lib/approvals.js` | 批准/待批清单（guard / CLI / daemon / UI 共用；tmp-file + rename 原子写） |
 | `lib/reports.js` | 系统事件（pi-durable onReport）：内存环 + judge-log 留痕 + SSE 广播 |
+| `lib/agent-policy.js` | 会话运行策略的校验与规整（思考档位按模型 thinkingLevelMap / 轮数上限 / 压缩策略） |
 | `lib/judge.js` | judge 子系统（issue #70）：三原语 noul/choice/score + provider 抽象（heuristic 内置 / system-one HTTP）+ 降级 + 审计 |
 | `lib/backup.js` | VACUUM INTO 快照 |
 | `lib/lock.js` | 单写者锁（PID 存活检查，崩溃遗留锁自动接管） |
@@ -124,6 +125,16 @@ images 初始化失败降级为原样透传（图片仍按模型限制返回）�
 
 run 体检与 `pi.live.runFailure`（1.5）：run 没给出回答就结束时，原因并入体检 flags（`run-failure:<reason>`，附 detail）；
 用户主动的中止 / 重置不体检（否则每条都是 empty-answer 噪音，还会污染连败计数）。
+
+### 会话运行策略（pi.agent 文档）
+
+pi-durable 1.4 / 1.5 让每个会话的 agent 文档（`pi.agent`，AgentState）多出三类可持久化、随 fork 继承、即时生效的字段：
+`thinkingLevel`、`maxTurns`（单次 run 的工具轮数上限，到达即以 `turn_limit` 结束）、`compaction`（会话级压缩策略，
+字段缺省者回落 harness 设置）。`/api/config` 经 `lib/agent-policy.js` 校验后 `configure()`：思考档位必须是 7 个合法值之一
+**且模型支持**（`thinkingLevelMap` 里映射为 null 的档位不可用，GLM-5.x 只有 low / high / max），`null` 清除。
+
+默认值与 pi 同源：新会话的思考档位取 `settings.json` 的 `defaultThinkingLevel`（模型不支持则退到 high / 第一个可用档位）；
+codemode 默认开关取 `defaultTools`（裸名替换、`+name` 追加、`-name` 移除）。UI 顶栏 ⚙ 弹层只提交改动的字段。
 
 ### 审计条目（host.config）
 

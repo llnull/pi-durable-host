@@ -37,7 +37,8 @@ import { buildDataset } from "./lib/dataset.js";
 import { ApprovalDecision, DEFAULT_APPROVAL_TIMEOUT_MS, buildGuard, buildProjectContext, buildScreen, SubagentExtension } from "./lib/extensions.js";
 import { createJudge } from "./lib/judge.js";
 import { createReportLog } from "./lib/reports.js";
-import { openModelLayer } from "./lib/models.js";
+import { openModelLayer, piToolEnabled } from "./lib/models.js";
+import { thinkingLevelsOf } from "./lib/agent-policy.js";
 import { startServer } from "./lib/server.js";
 import { detectDaemon, daemonApi } from "./lib/daemon.js";
 import { collectStatus, printHistory, printStatus, readTaskGraph, readView, textOf } from "./lib/format.js";
@@ -96,7 +97,8 @@ const MODEL = MODEL_LAYER.model;
 
 const DEFAULT_AGENT = {
 	model: MODEL,
-	thinkingLevel: "high",
+	// 思考档位：pi settings.json 的 defaultThinkingLevel 优先（模型不支持时退到 high / 第一个可用档位）
+	thinkingLevel: pickThinkingLevel(MODEL_LAYER.models.getModel(MODEL.provider, MODEL.modelId), MODEL_LAYER.thinkingLevel),
 	cwd: WORKSPACE,
 	instructions:
 		"You are the Pi Durable host agent on this machine. Be concise. Work only inside the current working directory.",
@@ -109,6 +111,15 @@ const DEFAULT_AGENT = {
  * env（PI_DURABLE_IMAGES / PI_DURABLE_CODEMODE）优先于 host.json features 段，与 cfgOr 同序。
  * 值：1/true/on 开，0/false/off 关，未设取默认。
  */
+/**
+ * 新会话的默认思考档位：想要的（pi 默认）→ high → 模型支持的第一个档位。
+ * pi-durable 只校验档位是 7 个合法值之一，模型不支持的档位由 provider 侧处理；这里直接选一个一定可用的。
+ */
+function pickThinkingLevel(model, wanted) {
+	const supported = thinkingLevelsOf(model);
+	return [wanted, "high"].find((level) => level && supported.includes(level)) ?? supported[0];
+}
+
 function featureOn(envKey, fileKey, def) {
 	const v = process.env[envKey] ?? HOST_CONFIG.features?.[fileKey];
 	if (v === undefined || v === null || v === "") return def;
@@ -155,7 +166,8 @@ async function buildRegistry() {
 	}
 	// pi-durable 1.2.0 codemode（默认关，动态 import：quickjs wasm 只在启用时加载）：
 	// 模型写的 JS 脚本在 QuickJS 沙箱里调本会话工具（nested calls），脚本崩溃后确定性回放。
-	if (featureOn("PI_DURABLE_CODEMODE", "codemode", false)) {
+	// 默认跟随 pi：settings.json 的 defaultTools 含 codemode（或 +codemode）即启用——本机 pi CLI 开了，host 就不该落后
+	if (featureOn("PI_DURABLE_CODEMODE", "codemode", piToolEnabled(MODEL_LAYER.defaultTools, "codemode") ?? false)) {
 		try {
 			const { createCodemodeExtension } = await import("@earendil-works/pi-durable/codemode");
 			const { CodemodeSandbox } = await import("@earendil-works/pi-codemode");

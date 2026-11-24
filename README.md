@@ -25,7 +25,8 @@ node host.js ask "列出本目录结构"   # 或者直接 CLI 提问
 - **多会话**：命名会话 ↔ conversation 映射，UI/CLI 随时切换
 - **模型**：完全复用 pi 配置（自定义中继 + 凭证），UI 内跨 provider 即时切换
 - **图片输入**（pi-durable 1.2.0）：`read` 工具可直接读图片（jpg/png/gif/webp/bmp）作图片块进上下文，Photon 预处理（EXIF 纠向、缩放到模型限制，worker 线程懒加载）；`PI_DURABLE_IMAGES=0` 可关
-- **codemode**（pi-durable 1.2.0，opt-in）：`PI_DURABLE_CODEMODE=1` 启用后 agent 可写 JS 脚本在 QuickJS 沙箱里批量调工具（嵌套调用），脚本崩溃后跨重启确定性回放
+- **codemode**：agent 可写 JS 脚本在 QuickJS 沙箱里批量调工具（嵌套调用），脚本崩溃后跨重启确定性回放。默认跟随 pi 的 `settings.json` `defaultTools`（本机 pi 开了 host 就开）；`PI_DURABLE_CODEMODE=0/1` 或 `data/host.json` 的 `features.codemode` 可覆盖（占 prompt 预算，不想用就关）
+- **会话运行策略**（pi-durable 1.4 / 1.5）：每个会话可单独设思考档位、单次 run 的工具轮数上限、压缩策略（顶栏 ⚙），和模型切换一样即时生效、持久保存、随 fork 继承；默认跟随 pi / host 设置
 - **分叉重试**：从任意提问分叉出新会话换说法重问，原会话不变
 - **上下文调试**：查看任意条目处模型实际看到的 context
 - **危险命令审批**：危险命令不执行而是**挂起等人工决定**（pi-durable 1.6 信号/闸门，跨重启存活）；Web UI / CLI 一键「批准并继续」，批准后 agent 自动接着跑，无需重试
@@ -44,7 +45,7 @@ host 不维护自己的模型配置——直接读 pi CLI 的 `~/.pi/agent/`，�
 | `~/.pi/agent/models.json` | 自定义 provider（中继/自建端点）：`baseUrl` + `api` + 模型目录；`apiKey` 支持 `$VAR` 环境引用（密钥不落盘） |
 | `~/.pi/agent/auth.json` | pi `/login` 存储的 api-key 凭证 |
 | `~/.pi/agent/models-store.json` | pi 维护的模型目录缓存（`pi update --models`） |
-| `~/.pi/agent/settings.json` | `defaultProvider` / `defaultModel` |
+| `~/.pi/agent/settings.json` | `defaultProvider` / `defaultModel`；`defaultThinkingLevel`（新会话的默认思考档位）；`defaultTools`（含 `codemode` / `+codemode` 时 host 默认开启 codemode 工具） |
 
 选型顺序：`PI_DURABLE_PROVIDER=<id>` 显式指定 → `settings.json` 的 `defaultProvider` → `models.json` 自定义 provider → `auth.json` 凭证 provider。
 `PI_DURABLE_MODEL` 覆盖默认模型；`PI_DURABLE_KEY_<PROVIDER_ID>` 覆盖凭证（优先于 auth.json）；`PI_DURABLE_PI_DIR` 覆盖 pi agent 目录。
@@ -134,7 +135,7 @@ node host.js config                              # 重置存储的 cwd/model 为
 | `POST /api/abort` | 中止当前运行（后台任务不受影响） |
 | `POST /api/compact` | `{ instructions? }` 提交压缩任务 |
 | `POST /api/reset` | `{ note? }` 重置上下文 |
-| `POST /api/config` | `{ cwd? / instructions? / model? }`（变更自动写入 `host.config` 审计条目） |
+| `POST /api/config` | `{ cwd? / instructions? / model? / thinkingLevel? / maxTurns? / compaction? }`（`null` 清除回默认；变更自动写入 `host.config` 审计条目） |
 | `POST /api/sessions` | `{ action: new\|switch\|delete, name }` |
 | `POST /api/fork` | `{ entryId, name? }` 从历史条目分叉新会话并切换 |
 | `POST /api/wait-idle` | `{ timeoutMs?, session? }` 等会话空闲（外部自动化动作前的一致性保证）；超时 `{ idle: false }` |
