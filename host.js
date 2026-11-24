@@ -39,6 +39,7 @@ import { createJudge } from "./lib/judge.js";
 import { createReportLog } from "./lib/reports.js";
 import { openModelLayer, piToolEnabled } from "./lib/models.js";
 import { thinkingLevelsOf } from "./lib/agent-policy.js";
+import { makeFitter } from "./lib/images.js";
 import { startServer } from "./lib/server.js";
 import { detectDaemon, daemonApi } from "./lib/daemon.js";
 import { collectStatus, printHistory, printStatus, readTaskGraph, readView, textOf } from "./lib/format.js";
@@ -92,6 +93,7 @@ const SCREEN_RING = []; // 最近 50 条护栏命中（host 侧持有，server �
 const SCREEN_SINK = {}; // server 启动后注入 broadcast，host 侧 onFlag 经此发 SSE
 const SCREEN = SCREEN_MODE === "off" ? null : { mode: SCREEN_MODE, recent: SCREEN_RING, sink: SCREEN_SINK };
 
+let IMAGE_PROCESSOR; // Photon 图片处理器（images 特性开启时由 buildRegistry 填入）
 const MODEL_LAYER = openModelLayer();
 const MODEL = MODEL_LAYER.model;
 
@@ -146,11 +148,18 @@ async function buildRegistry() {
 		try {
 			const { createNodePhotonImages } = await import("@earendil-works/pi-durable/images/node");
 			images = await createNodePhotonImages();
+			IMAGE_PROCESSOR = images; // /api/ask 的用户图片入库前也按模型限制整理（lib/images.js）
 		} catch (e) {
-			console.error("[features] 图片处理器初始化失败，read 图片按模型限制原样透传：", e?.message ?? e);
+			console.error("[features] 图片处理器初始化失败，图片按模型限制原样透传：", e?.message ?? e);
 		}
 	}
 	registry.install(createCodingTools(images ? { images } : {}));
+	if (images) {
+		// pi-durable 1.6 fit-images 扩展：模型拿到的每个工具结果里的图片（MCP、codemode 的 image() 等）入库前都按当前
+		// 模型限制整理——read 自己已经做了，这里是兜住其余来源。装在最前面：后装的扩展看到的是已整理的图。
+		const { createFitImagesExtension } = await import("@earendil-works/pi-durable/images/fit");
+		registry.install(createFitImagesExtension(images));
+	}
 	registry.install(buildProjectContext()); // injects workspace AGENTS.md when present
 	registry.install(buildGuard({ approvalsFile: APPROVALS_FILE, timingLog: TIMING_LOG, judge: JUDGE, mode: cfgOr("PI_DURABLE_GUARD", "guard", "mode") ?? "block", bashTimeout: BASH_TIMEOUT, approvalTimeoutMs: APPROVAL_TIMEOUT_MS }));
 	if (SCREEN) {
@@ -890,6 +899,7 @@ async function cmdServe(args) {
 			judge: JUDGE,
 			screen: SCREEN,
 			reports: REPORTS,
+			imageFit: makeFitter(IMAGE_PROCESSOR),
 			routingAuto: envOr("PI_DURABLE_JUDGE_ROUTING", "routing") === "auto",
 			// jevlike 网关 sidecar（issue #110）：judge.url 指向本地网关时，由 daemon 托管其进程生命周期。
 			sidecarUrl: envOr("PI_DURABLE_JUDGE_URL", "url"),

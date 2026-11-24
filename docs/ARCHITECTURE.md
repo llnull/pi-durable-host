@@ -24,6 +24,7 @@
 | `lib/approvals.js` | 批准/待批清单（guard / CLI / daemon / UI 共用；tmp-file + rename 原子写） |
 | `lib/reports.js` | 系统事件（pi-durable onReport）：内存环 + judge-log 留痕 + SSE 广播 |
 | `lib/agent-policy.js` | 会话运行策略的校验与规整（思考档位按模型 thinkingLevelMap / 轮数上限 / 压缩策略） |
+| `lib/images.js` | 用户图片入会话前的整理（pi-durable 1.6 images/fit：按模型限制缩放 / 转码，坏图剔除） |
 | `lib/judge.js` | judge 子系统（issue #70）：三原语 noul/choice/score + provider 抽象（heuristic 内置 / system-one HTTP）+ 降级 + 审计 |
 | `lib/backup.js` | VACUUM INTO 快照 |
 | `lib/lock.js` | 单写者锁（PID 存活检查，崩溃遗留锁自动接管） |
@@ -135,6 +136,15 @@ pi-durable 1.4 / 1.5 让每个会话的 agent 文档（`pi.agent`，AgentState�
 
 默认值与 pi 同源：新会话的思考档位取 `settings.json` 的 `defaultThinkingLevel`（模型不支持则退到 high / 第一个可用档位）；
 codemode 默认开关取 `defaultTools`（裸名替换、`+name` 追加、`-name` 移除）。UI 顶栏 ⚙ 弹层只提交改动的字段。
+
+### 图片入库前的整理（images/fit）
+
+`/api/ask` 的图片附件此前原样 base64 落库。pi-durable 1.6 的 `fitImages(content, imageLimits(model), processor)`
+在提交前把每张图按**会话当前模型**的限制（`inputLimits.images.resize`，缺省 2000×2000 / 4.5MB）真正解码、缩放、转码：
+provider 会拒绝的坏图不进 transcript（否则此后的每次请求都会失败），并给模型留下"改了什么"的说明（同一份说明经
+`imageNotes` 回给 UI）。`lib/images.js` 的 `fitUserImages` 是纯逻辑（处理器以参数注入，可单测）：模型不支持图片输入时
+只补提醒（entry 仍保留图片，切到视觉模型后可达——issue #138 的既定取舍）；图片全部被剔除且用户没打字则拒绝提交。
+Photon 处理器由 `buildRegistry` 填入，同时装上 `createFitImagesExtension`（afterTool）兜住其余来源的工具图片。
 
 ### 审计条目（host.config）
 
