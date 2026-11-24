@@ -24,13 +24,14 @@ Model config is **reused directly from your local pi CLI's** `~/.pi/agent/` — 
 - **Persistent sessions**: SQLite (WAL) storage; after a crash, `resume()` continues unfinished runs (including in-flight responses)
 - **Multiple sessions**: named sessions ↔ conversation mapping; switch anytime from UI or CLI
 - **Models**: fully reuses pi config (custom relays + credentials); switch providers/models instantly in the UI
-- **Image input** (pi-durable 1.2.0): the `read` tool returns images (jpg/png/gif/webp/bmp) as image blocks; Photon preprocessing (EXIF orientation, resize to model limits, lazy worker thread); `PI_DURABLE_IMAGES=0` disables
-- **codemode** (pi-durable 1.2.0, opt-in): with `PI_DURABLE_CODEMODE=1` the agent can run JS scripts in a QuickJS sandbox that call tools as nested calls; scripts replay deterministically across restarts
+- **Image input**: the `read` tool returns images (jpg/png/gif/webp/bmp) as image blocks; Photon preprocessing (EXIF orientation, resize to model limits, lazy worker thread). Images pasted/dropped in the Web UI are decoded, resized and converted to the session's current model limits **before** they are stored (pi-durable 1.6 `images/fit`); broken images are left out with a note (returned as `imageNotes`), and the UI warns when the model takes no image input. Tool-produced images (MCP, codemode `image()`) go through the same `fit-images` extension. `PI_DURABLE_IMAGES=0` disables (pass-through)
+- **codemode**: the agent can run JS scripts in a QuickJS sandbox that call tools as nested calls; scripts replay deterministically across restarts. Defaults to pi's `settings.json` `defaultTools` (if your pi CLI has it on, so does the host); override with `PI_DURABLE_CODEMODE=0/1` or `features.codemode` in `data/host.json` (costs prompt budget — turn it off if unwanted)
+- **Per-session run policy** (pi-durable 1.4 / 1.5): thinking level, max tool rounds per run, compaction policy — per session, effective immediately, persisted, inherited by forks (⚙ in the top bar); defaults follow pi / host settings
 - **Fork & retry**: fork a new session from any past question, rephrase and re-ask — the original session is untouched
 - **Context debugging**: inspect exactly what the model saw at any entry
-- **Dangerous-command approval**: guard interception + pending list + one-click approval
+- **Dangerous-command approval**: dangerous commands are **not executed — the call parks until you decide** (pi-durable 1.6 signals/gates, survives restarts); approve from the Web UI or CLI and the agent continues by itself, no retry round needed
 - **Judge checkups**: Jev-like typed judgments on the control plane — every run gets an automatic checkup (tool errors / empty answers / repeat failures) + full audit log; flagged runs show a badge suggesting fork-and-retry
-- **Observability**: live task graph, tool timings, usage (tokens & cost per model)
+- **Observability**: live task graph, tool timings, usage (tokens & cost per model), system-events panel (pi-durable `onReport`: faulted / restart-limited tasks, migration failures, extension & listener errors — previously invisible)
 - **Ops**: `VACUUM INTO` online backup, hot restart, log rotation, gzip for large responses
 
 ## Configuration
@@ -44,7 +45,7 @@ The host keeps no model config of its own — it reads pi CLI's `~/.pi/agent/` d
 | `~/.pi/agent/models.json` | custom providers (relays / self-hosted endpoints): `baseUrl` + `api` + model catalog; `apiKey` supports `$VAR` env references (keys never on disk) |
 | `~/.pi/agent/auth.json` | API-key credentials stored by pi `/login` |
 | `~/.pi/agent/models-store.json` | pi's model-catalog cache (`pi update --models`) |
-| `~/.pi/agent/settings.json` | `defaultProvider` / `defaultModel` |
+| `~/.pi/agent/settings.json` | `defaultProvider` / `defaultModel`; `defaultThinkingLevel` (thinking level for new sessions); `defaultTools` (`codemode` / `+codemode` turns the host's codemode on by default) |
 
 Selection order: explicit `PI_DURABLE_PROVIDER=<id>` → `settings.json` `defaultProvider` → custom providers in `models.json` → credential providers in `auth.json`.
 `PI_DURABLE_MODEL` overrides the default model; `PI_DURABLE_KEY_<PROVIDER_ID>` overrides credentials (takes precedence over auth.json); `PI_DURABLE_PI_DIR` overrides the pi agent directory.
@@ -80,14 +81,15 @@ Example custom relay (`~/.pi/agent/models.json`):
 | `PI_DURABLE_JUDGE_URL` / `PI_DURABLE_JUDGE_KEY` / `PI_DURABLE_JUDGE_MODEL` | Jev/system-one compatible judge endpoint (falls back to the built-in heuristic rule judge when unset); endpoint failures degrade automatically — safety features are never disabled |
 | `PI_DURABLE_JUDGE_ROUTING` | set to `auto` to enable busy-time judge routing (classify steer/queue when whenBusy is not explicit) |
 | `PI_DURABLE_IMAGES` | `read` image support (default on); `0` disables Photon preprocessing — images still pass through as-is within model limits |
-| `PI_DURABLE_CODEMODE` | codemode tool (default off); set `1` to enable (also via `features.codemode` in `data/host.json`) |
+| `PI_DURABLE_CODEMODE` | codemode tool (default: follows pi's `defaultTools`); `0` / `1` overrides (also via `features.codemode` in `data/host.json`) |
+| `PI_DURABLE_APPROVAL_TIMEOUT` | seconds a dangerous command waits for a decision (default `86400`; also `guard.approvalTimeoutSec` in `data/host.json`). On timeout the call is blocked and the model is told to re-propose |
 
 Requires Node >= 22.19 (the `node:sqlite` ExperimentalWarning can be ignored).
 
 ## Web UI (http://localhost:7600/)
 
 - **Top bar**: session dropdown (switch/create/delete), model dropdown (applies immediately), backup, hot restart, task graph / files / compaction / reset
-- **Transcript**: grouped by run; tool-call cards with paired call/result; markdown/tables/code blocks; live streaming
+- **Transcript**: grouped by run; tool-call cards with paired call/result; markdown/tables/code blocks; live streaming. Conversations from before a compaction / reset are no longer out of reach: the divider offers "view earlier conversation", paged into a read-only archive pinned at the top (marked as outside the model context) while keeping your reading position
 - **Fork (⑂)**: hover any user message → **⑂** button → confirm to fork a new session from that entry and switch to it
   (`Conversation.fork`: context and agent config copied up to that point, fresh provider identity). Rephrase and re-ask in the new session — that's "retry from here"; the original session is untouched. Button always visible on touch devices
 - **Context debugging (⚿)**: hover a run header → **⚿** button → overlay showing exactly what the model saw at that question
@@ -123,21 +125,22 @@ Auth: once `PI_DURABLE_TOKEN` is set, every endpoint requires `Authorization: Be
 
 | Endpoint | Description |
 |---|---|
-| `POST /api/ask` | `{ content, whenBusy?: "followUp"\|"steer"\|"reject", wait?, requestId?, session? }`; queue/steer while busy go here |
+| `POST /api/ask` | `{ content, whenBusy?: "followUp"\|"steer"\|"reject", wait?, requestId?, session?, images?: [{ mimeType, data, filename? }] }`; queue/steer while busy go here; with images the reply carries `imageNotes` (resized / left out / model takes no images) |
 | `POST /api/abort` | abort the current run (background tasks unaffected) |
 | `POST /api/compact` | `{ instructions? }` submit a compaction task |
 | `POST /api/reset` | `{ note? }` reset context |
-| `POST /api/config` | `{ cwd? / instructions? / model? }` (changes audited into `host.config` entries) |
+| `POST /api/config` | `{ cwd? / instructions? / model? / thinkingLevel? / maxTurns? / compaction? }` (`null` clears back to the default; changes audited into `host.config` entries) |
 | `POST /api/sessions` | `{ action: new\|switch\|delete, name }` |
 | `POST /api/fork` | `{ entryId, name? }` fork a new session from a history entry and switch |
 | `POST /api/wait-idle` | `{ timeoutMs?, session? }` wait for session idle (consistency before external automation); timeout → `{ idle: false }` |
-| `POST /api/approve` / `/api/approve/revoke` / `/api/approvals/dismiss` | approvals management |
+| `POST /api/approve` / `/api/approve/revoke` / `/api/approvals/dismiss` | approval management (approve/dismiss wakes the parked call; the reply carries `woke`: `delivered` = woken) |
 | `POST /api/backup` / `POST /api/restart` | online backup / hot restart |
 | `GET /api/state[?light=1]` | full snapshot (light = metadata only, ~1.2KB; image blocks in the full view are slim references like SSE frames — fetch originals via `GET /api/entry-image`); `GET /api/events` for SSE incremental updates |
 | `GET /api/history` / `/api/entry?id=` / `/api/submission?id=` | transcript and submission records |
 | `GET /api/context?entryId=n` | model context at that entry (message digest, dump-proof) |
 | `GET /api/judge/log` / `GET /api/judge/checkups` | judge audit-log tail / run checkup records |
-| `GET /api/status` / `/api/tasks` / `/api/usage` / `/api/models` / `/api/sessions` / `/api/approvals` / `/api/files` / `/api/commands` | read-only status endpoints |
+| `GET /api/status` / `/api/tasks` / `/api/usage` / `/api/models` / `/api/sessions` / `/api/approvals` / `/api/files` / `/api/commands` / `/api/reports` | read-only status endpoints (`/api/reports`: system events since this daemon start; full history in `data/judge-log.jsonl` as `type:"report"`) |
+| `GET /api/entries?before=n&limit=50` | entries older than the active transcript (`id < before`, chronological, image blocks as slim references); `hasMore` when more remain |
 | `GET /files/<path>` | workspace static files (path-traversal protected) |
 
 ## Core Semantics
@@ -160,13 +163,13 @@ Queued and steered messages both land in the transcript's `pi.inbox` (visible in
 
 ### Dangerous-command approval (host-guard)
 
-Bash commands matching dangerous patterns (`sudo`, `rm -r/-f`, `mkfs`, `dd of=/dev/*`, fork bombs, force pushes, disk wiping, …) are intercepted: the command goes to `data/approvals-pending.json` and the agent receives a prompt with an escape hatch. Approval channels:
+Bash commands matching dangerous patterns (`sudo`, `rm -r/-f`, `mkfs`, `dd of=/dev/*`, fork bombs, force pushes, disk wiping, …) are **not executed**: the tool call parks until you decide (pi-durable 1.6 signals/gates — it holds no process and survives restarts), and the command goes to `data/approvals-pending.json`. **Approve and the call continues by itself** — no need for the agent to retry; dismiss and the agent gets an explicit block (and is told not to work around it).
 
-- Web UI approvals panel: one-click "approve / dismiss" (pending count as a badge on the panel title)
-- CLI: `node host.js approve -- <command>` (`--list` / `--revoke n`)
+- Web UI: the "Live run" panel and the "Approvals" panel both offer "approve & continue / reject"; the top-bar status turns into "waiting for approval" and the tab title gets a ⏸ marker
+- CLI: `node host.js approve -- <command>` (`--list` / `--revoke n`) — goes through the daemon when it runs; a foreground `ask` without a daemon polls the allow-list and wakes the call itself
 - Allowed-prefix wildcards: approving `git push origin*` whitelists every command starting with it
 
-Approvals/revocations take effect live on a running daemon (the guard re-reads the file on every call); after approving, ask the agent to retry the original command.
+The wait has a limit (default one day; `PI_DURABLE_APPROVAL_TIMEOUT` seconds or `guard.approvalTimeoutSec` in `data/host.json`): on timeout the call is blocked and the model is told to re-propose, so a run never hangs forever. A hot restart during the wait keeps the call parked (graceful stop only aborts a run when an invocation is really executing); pressing "Abort" cancels the parked call too (the panel then shows "call ended"). `guard.mode`: `block` (default, the gate) / `flag` (audit only) / `off`. Revocations take effect live on a running daemon (the guard re-reads the file on every call).
 
 ### Judge checkups (Jev-like judgments)
 
@@ -194,6 +197,12 @@ pi-durable storage has no cross-process lock: **one store can be opened by only 
 ### Session-failure self-exit (pi-durable 1.2.0 semantics)
 
 Any storage error (disk full, IO failure, corruption) permanently closes the Session — every later call and wait rejects with `SessionFailed`, nothing retries. The daemon observes `harness.closed` and on failure logs, clears `serve.json`, and **exits non-zero** — no zombie "process alive but always wrong" daemon; a human/supervisor starts the successor. The UI live panel also surfaces `pi.live.compactionFailure` (kept until the next compaction succeeds — this failure used to be silent), and a nonzero bash exit is no longer an exception but an error result carrying `exit_code` (the model sees the code directly).
+
+### System events & drill
+
+The "System events" side panel lists what pi-durable's `onReport` reports (faulted tasks, tasks ended by the restart limit, migration failures, extension/listener errors, storage failures); error-level events also toast, and `node host.js status` shows the count and the latest one. Normally it stays empty — if it has content, it is worth a look.
+
+To verify the chain itself, start the daemon with the drill switch: `PI_DURABLE_FAULT=hook node host.js serve` — it installs an extension whose `afterTool` hook always throws, producing one "extension error" event per tool call (the tool result is unaffected); panel, toast and audit log should all show it.
 
 ### Tool timing
 
