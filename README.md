@@ -30,7 +30,7 @@ node host.js ask "列出本目录结构"   # 或者直接 CLI 提问
 - **上下文调试**：查看任意条目处模型实际看到的 context
 - **危险命令审批**：危险命令不执行而是**挂起等人工决定**（pi-durable 1.6 信号/闸门，跨重启存活）；Web UI / CLI 一键「批准并继续」，批准后 agent 自动接着跑，无需重试
 - **judge 体检**：Jev-like 类型化判断接入控制面——每个 run 结束自动体检（工具错误/空回答/连败）+ 全量审计日志，异常 run 徽标提示可分叉重试
-- **可观测**：实时任务图、工具耗时、用量（按模型分 tokens 与金额）
+- **可观测**：实时任务图、工具耗时、用量（按模型分 tokens 与金额）、系统事件面板（pi-durable `onReport`：任务故障 / 被重启上限终止 / 迁移失败 / 扩展与监听器错误，此前完全不可见）
 - **运维**：`VACUUM INTO` 在线备份、热重启、日志轮转、大响应 gzip
 
 ## 配置
@@ -144,7 +144,7 @@ node host.js config                              # 重置存储的 cwd/model 为
 | `GET /api/history` / `/api/entry?id=` / `/api/submission?id=` | transcript 与提交记录 |
 | `GET /api/context?entryId=n` | 该条目处的模型上下文（消息摘要，防倾倒） |
 | `GET /api/judge/log` / `GET /api/judge/checkups` | judge 判断审计尾览 / run 体检记录 |
-| `GET /api/status` / `/api/tasks` / `/api/usage` / `/api/models` / `/api/sessions` / `/api/approvals` / `/api/files` / `/api/commands` | 状态类只读端点 |
+| `GET /api/status` / `/api/tasks` / `/api/usage` / `/api/models` / `/api/sessions` / `/api/approvals` / `/api/files` / `/api/commands` / `/api/reports` | 状态类只读端点（`/api/reports`：本次启动以来的系统事件，全量在 `data/judge-log.jsonl` 的 `type:"report"`） |
 | `GET /files/<path>` | 工作区静态文件（路径穿越防护） |
 
 ## 核心语义
@@ -217,6 +217,14 @@ pi-durable 存储无跨进程锁：**一个存储同一时刻只能被一个进�
 daemon 显式观察 `harness.closed`：失败即记日志、清 `serve.json`、**非零码退出**——不留「进程活着但永远答错」的僵尸，
 由人/supervisor 拉起后继。UI 侧栏实时区同时呈现 `pi.live.compactionFailure`（压缩失败保留到下次成功出摘要为止，
 此前这个失败是无声的）；bash 非零退出不再抛异常，而是携带 `exit_code` 的错误结果（模型可直接看到退出码）。
+
+### 系统事件与演练
+
+侧栏「系统事件」面板列出 pi-durable `onReport 上报的异常（任务故障、被重启上限终止、迁移失败、扩展/监听器错误、存储失败），
+错误级会弹提示；`node host.js status` 也会给出条数与最近一条。正常情况下这里是空的——它有内容就值得看一眼。
+
+要验证这条链路本身是否通，可以用演练开关启动 daemon：`PI_DURABLE_FAULT=hook node host.js serve`——它装入一个
+`afterTool` 必抛错的扩展，每次工具调用产生一条「扩展错误」事件（调用结果不受影响），面板 / 提示 / 审计日志应同时出现。
 
 ### 工具耗时
 

@@ -22,6 +22,7 @@
 | `lib/extensions.js` | 自建扩展：host-project-context（AGENTS.md 注入）/ host-guard（审批闸门 + 计时 wrap）/ host-screen（工具结果护栏）/ host-team（subagent 工具） |
 | `lib/sessions.js` | 命名会话 ↔ conversation 映射 |
 | `lib/approvals.js` | 批准/待批清单（guard / CLI / daemon / UI 共用；tmp-file + rename 原子写） |
+| `lib/reports.js` | 系统事件（pi-durable onReport）：内存环 + judge-log 留痕 + SSE 广播 |
 | `lib/judge.js` | judge 子系统（issue #70）：三原语 noul/choice/score + provider 抽象（heuristic 内置 / system-one HTTP）+ 降级 + 审计 |
 | `lib/backup.js` | VACUUM INTO 快照 |
 | `lib/lock.js` | 单写者锁（PID 存活检查，崩溃遗留锁自动接管） |
@@ -109,6 +110,20 @@ images 初始化失败降级为原样透传（图片仍按模型限制返回）�
   `legacy`（升级前拦截留下的条目）。UI 据此决定按钮文案（批准并继续 / 加入批准清单）。
 - 优雅停止的例外：原策略先中止当前 run 再关存储（防死循环命令卡住关停，issue #147）；但没有调用真正在执行
   （仅挂起 / 仅生成中）时不中止——否则等了半天审批的命令会在热重启时被判死。
+
+### 系统事件（onReport）
+
+`HarnessOptions.onReport` 收到的是"不影响调用方成功的失败"：抛错的钩子/监听器、故障的任务（`task_faulted）、被重启上限
+终止的任务（`task_interrupted`，带 `restarts`）、迁移失败、过时的任务，以及最终让 Session 失败的存储错误。`lib/reports.js`
+把它们压成一行记录（`formatReport`，纯函数），进内存环（`/api/reports`、SSE `report` 事件、UI 面板）并追加到
+`data/judge-log.jsonl`（`type:"report"`，含堆栈）。记录自身失败只上报 onError，绝不向 Harness 抛。
+
+一条需要记住的上游实现事实：**`beforeTool` 钩子抛错 = 拦截该调用**（结果 "Tool call blocked: <错误消息>"，不产生
+`extension_error`）；只有经通用钩子链跑的钩子（`afterTool` / `afterRun` 等）抛错才上报并继续。对审批闸门来说这是
+失败即关闭——钩子里的 `readSignal` / `memo` 若异常，危险命令不会被执行。
+
+run 体检与 `pi.live.runFailure`（1.5）：run 没给出回答就结束时，原因并入体检 flags（`run-failure:<reason>`，附 detail）；
+用户主动的中止 / 重置不体检（否则每条都是 empty-answer 噪音，还会污染连败计数）。
 
 ### 审计条目（host.config）
 

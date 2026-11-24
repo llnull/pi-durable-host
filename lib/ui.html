@@ -284,6 +284,7 @@
   .toast { position: fixed; top: 54px; left: 50%; transform: translateX(-50%); background: var(--red-bg); color: var(--red); border: 1px solid #f2c4c0; border-radius: 10px; padding: 8px 16px; font-size: 13px; z-index: 99; display: none; }
   .toast.ok { background: var(--green-bg); color: var(--green); border-color: color-mix(in srgb, var(--green) 35%, transparent); }
   .toast.info { background: var(--paper); color: var(--soft); border-color: var(--line); box-shadow: 0 4px 14px rgba(26,34,51,.12); }
+  .toast.warn { background: var(--amber-bg); color: var(--amber); border-color: color-mix(in srgb, var(--amber) 35%, transparent); }
   #conn { font-size: 12px; }
   .filelink { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; word-break: break-all; }
   .filelink:hover { background: var(--accent-soft); }
@@ -375,6 +376,9 @@
     </div>
     <div class="panel" id="screenPanel" style="display:none">
       <h3>护栏（screen）</h3><div id="screenBody" class="muted">…</div>
+    </div>
+    <div class="panel" id="reportPanel" style="display:none">
+      <h3 title="pi-durable onReport：抛错的钩子/监听器、故障或被重启上限终止的任务、迁移失败、存储失败。全量在 data/judge-log.jsonl（type:report）">系统事件</h3><div id="reportBody" class="muted">…</div>
     </div>
     <div class="panel" id="jevPanel" style="display:none">
       <h3>网关（jevlike）</h3><div id="jevBody" class="muted">…</div>
@@ -1134,6 +1138,26 @@ function render(view) {
       }).join("");
     setPanelBadge("screenPanel", hits);
   } else sp.style.display = "none";
+
+  // 侧栏：系统事件（pi-durable onReport）——最近 12 条 + 错误级徽标
+  const rpanel = $("reportPanel");
+  if (reports.length) {
+    rpanel.style.display = "";
+    const serious = reports.filter((r) => r.severity === "critical" || r.severity === "error").length;
+    const rsig = reports.slice(0, 12).map((r) => `${r.at}:${r.kind}:${r.message}`).join("|") + serious;
+    if (rpanel.dataset.sig !== rsig) {
+      rpanel.dataset.sig = rsig;
+      const mark = { critical: "🟥", error: "⚠ ", warn: "· " };
+      const since = String(reportsSince).slice(11, 19);
+      $("reportBody").innerHTML =
+        `<div class="kv">自 ${esc(since || "启动")} · <b>${reports.length}</b> 条 · 错误 <b style="color:${serious ? "var(--amber)" : "inherit"}">${serious}</b></div>` +
+        reports.slice(0, 12).map((r) => {
+          const where = [r.task ? `#${esc(String(r.task.id))} ${esc(String(r.task.kind).replace(/^pi\./, ""))}` : "", r.extension ? `ext ${esc(String(r.extension))}` : "", r.callback ? `cb ${esc(String(r.callback))}` : "", r.reason ? esc(String(r.reason)) : "", r.restarts != null ? `重启 ×${r.restarts}` : ""].filter(Boolean).join(" · ");
+          return `<div class="kv" title="${esc(r.stack ?? r.message ?? "")}">${mark[r.severity] ?? "· "}<b>${esc(r.label)}</b>${where ? " · " + where : ""}<br><span class="muted">${esc(String(r.message ?? "").slice(0, 160))} · ${esc(String(r.at).slice(11, 19))}</span></div>`;
+        }).join("");
+    }
+    setPanelBadge("reportPanel", serious);
+  } else { rpanel.style.display = "none"; rpanel.dataset.sig = ""; }
 
   // 侧栏：对话大纲（issue #117）——run 级导航，长对话不用翻滚动找 fork 点
   const op = $("outlinePanel");
@@ -1990,6 +2014,8 @@ const UI_PROTO = 2; // 与 lib/server.js 的 SERVER_PROTO 对应
 let uiView = null;
 const judgeCheckups = new Map(); // runFirstId → 体检记录（SSE 'judge' 事件 + 初始拉取，issue #70）
 const screenFlags = []; // 最近护栏命中（SSE 'screen' 事件 + 初始拉取，issue #78）
+const reports = []; // 系统事件（SSE 'report' + 初始拉取 /api/reports，pi-durable onReport）；新的在前
+let reportsSince = ""; // daemon 启动时间（环在重启后清零）
 
 /** 初始拉取体检记录（页面加载/刷新后也能看到历史徽标） */
 (async () => {
@@ -1998,7 +2024,10 @@ const screenFlags = []; // 最近护栏命中（SSE 'screen' 事件 + 初始拉�
     for (const c of items ?? []) judgeCheckups.set(String(c.runFirstId), c);
     const scr = await api("/api/judge/screen").catch(() => null);
     for (const r of (scr?.items ?? []).slice().reverse()) screenFlags.unshift(r);
-    if (items?.length || screenFlags.length) scheduleRender(uiView);
+    const rep = await api("/api/reports").catch(() => null);
+    reportsSince = rep?.since ?? "";
+    for (const r of (rep?.items ?? []).slice().reverse()) reports.unshift(r);
+    if (items?.length || screenFlags.length || reports.length) scheduleRender(uiView);
   } catch {}
 })();
 
@@ -2026,6 +2055,11 @@ function applyEvent(name, data) {
       screenFlags.unshift(data);
       if (screenFlags.length > 50) screenFlags.pop();
       if (data.mode === "block") toast(`🛡 工具输出被拦截：${data.tool}（${(data.flags ?? []).join("、")}）`);
+    } else if (name === "report") {
+      // 系统事件（pi-durable onReport）：进侧栏面板；错误级及以上打扰一下（crash-loop 被上限终止、任务故障、迁移失败…）
+      reports.unshift(data);
+      if (reports.length > 100) reports.pop();
+      if (data.severity === "critical" || data.severity === "error") toast(`⚠ 系统事件：${data.label}${data.message ? " — " + String(data.message).slice(0, 90) : ""}`, "warn");
     } else if (name === "live") {
       uiView.docs = { ...(uiView.docs ?? {}), "pi.live": data.live };
     } else if (name === "docs") {
@@ -2042,7 +2076,7 @@ function applyEvent(name, data) {
 function connect() {
   const es = new EventSource("/api/events");
   es.addEventListener("session", (ev) => { renderSessions(JSON.parse(ev.data)); });
-  for (const name of ["view", "entries", "live", "docs", "judge", "screen"]) es.addEventListener(name, (ev) => applyEvent(name, JSON.parse(ev.data)));
+  for (const name of ["view", "entries", "live", "docs", "judge", "screen", "report"]) es.addEventListener(name, (ev) => applyEvent(name, JSON.parse(ev.data)));
   es.onerror = () => { $("conn").textContent = "重连中…"; };
 }
 connect();
