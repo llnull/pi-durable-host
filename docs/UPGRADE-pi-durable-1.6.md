@@ -5,6 +5,8 @@
 > 升级前备份 `data/backups/pre-pi-durable-1.6-2026-11-24T03-04-24Z.sqlite`（schema v1，文件名不参与轮转，请长期保留）；
 > 真实库迁移后 `durable_schema` = 2，21,164 条 entry / 13 个会话完好，四个会话活跃段条数与升级前逐条一致，
 > 默认模型回到与 pi CLI 一致的 `glm-5.4`。补丁文件已随合并删除（提交即补丁）。
+> **新能力落地（同日）**：迁移后按第四节的清单逐项实现了审批闸门、系统事件、会话运行策略、图片整理、归档回看等，
+> 各自独立提交于同一分支；默认行为的变化见第六节末尾「上线后的默认行为变化」。
 
 上游 `@earendil-works/*` 自 1.3.0（2026-10-15，本仓库当前锁定）之后发布了 1.4.0（10-21）、1.5.0（11-02）、
 1.5.1 / 1.5.2（11-09 / 11-10）、1.6.0（11-20）；本机 pi CLI 已是 1.6.0。四个包版本号同步（pi-durable 精确依赖
@@ -140,23 +142,24 @@ group commit 与调度器扩展性（见第一节）、上述内存修复、关�
 
 演练期间对模型端点发起了约 16 次很小的请求（GLM Coding Plan；其中约 6 次是为验证压缩闸门而生成的摘要）。
 
-## 四、机会项（升级后按需立项，不阻塞本次）
+## 四、机会项与落地情况
 
-| 优先级 | 项 | 说明 |
+迁移（`cb37655`）之后按价值逐项落地，每项独立提交、单测 + dev daemon（迁移后库的快照、独立端口）端到端 + 真实浏览器验证：
+
+| 状态 | 项 | 说明 |
 |---|---|---|
-| P1 | **用户图片入会话前缩放**（1.6.0 `images/fit`） | `/api/ask` 现在把粘贴/拖拽的图片**原样**存入会话（`lib/server.js:1218`）：库里是完整 base64，也可能超出模型限制。`fitImages()` 在提交前按模型限制缩放；`createFitImagesExtension()` 作为 `afterTool` 钩子覆盖所有工具产出的图片（不止 `read`） |
-| P1 | `onReport` 接入可观测 | host 目前没有 `onReport`：`storage_failed` / `task_faulted` / `migration_failed` / `task_interrupted` 全部不可见。写入 serve.log + judge-log 即可 |
-| P1 | `runFailure` 进体检 | UI 已呈现；可再把原因并入 run 体检的 flags（如 `run-failure:interrupted`），让"异常 run"徽标覆盖"没回答就结束"的情形 |
-| P1 | 跟随 pi 的 `settings.json` | `defaultTools: ["+codemode"]` → 自动开启 codemode（本机 pi 已开、host 未开）；`defaultThinkingLevel`；`prompts` / `skills` 资源路径与 `enableSkillCommands`（`/api/commands` 目前只读两个约定目录） |
-| P2 | 子代理工具改为 park | 1.6.0：`{ wait: { on: [子任务] } }` + `SubmissionDraft.notify`，等待期间不占调用（上游示例 "a subagent that waits"） |
-| P2 | 每会话压缩策略 | `configure({ compaction })`（1.5.1）+ `modelOverrides`（1.4.0）——host 在同一 harness 里同时提供 128k 与 1M 窗口的模型，按模型设阈值更合理；可做成 UI 配置 |
-| P2 | 准入与限额 | `maxTurns`（单次 run 轮数上限）、`whenIdle: "reject"`（steer 或拒绝一步到位）、`submit(tx, draft)`（检查与提交同一事务） |
-| P2 | 可选展示压缩前历史 | head marker 之前的条目现在都在视图历史里；加一个 UI 开关即可（默认保持现状） |
-| P2 | `HarnessOptions.readOnly` | dataset / selftrain 等工具以只读查看器身份读库，不必等 daemon 让出 |
-| P2 | `identity` / `telemetry` | User-Agent 归因；`DURABLE_TELEMETRY_SCHEMA` 可喂给 host 的可观测面板 |
-| P2 | 更多 pi-ai API | host 只注册 `anthropic-messages` / `openai-completions`；`openai-responses` 等懒加载模块现成可用 |
-| P2 | sqlite `prefix` 表迁入 sessions / approvals | 自 1.3 评估文档结转 |
-| 战略 | pi 扩展包兼容 | 本机 pi CLI 通过 `npm:pi-web-access` 具备联网能力，host 的 agent 没有。两者的扩展 API 不同，是一项独立的大工程，但它是"与 pi 同源"目前最大的功能差距 |
+| ✅ 已落地 | **审批闸门「批准即续跑」**（`f542666`） | 1.6 信号/闸门：危险命令挂起等人工决定（不占进程、跨重启存活），Web UI / CLI 批准后调用自动继续，不再需要模型重试一轮；拒绝 / 超时 / 中止各有明确结果；优雅停止只在真有调用在执行时才中止 run |
+| ✅ 已落地 | **系统事件可观测**（`aba10ff`） | `onReport` → 内存环 + judge-log 留痕 + SSE + UI「系统事件」面板；`runFailure` 并入 run 体检；`PI_DURABLE_FAULT=hook` 演练开关 |
+| ✅ 已落地 | **会话运行策略**（`7c0c649`） | 思考档位（按模型 thinkingLevelMap 校验）/ 单次 run 轮数上限 / 压缩策略，UI ⚙ 弹层；新会话档位与 codemode 开关跟随 pi 的 `defaultThinkingLevel` / `defaultTools` |
+| ✅ 已落地 | **图片入库前按模型限制整理**（`98d6396`） | 1.6 `images/fit`：缩放 / 转码 / 坏图剔除并说明；`fit-images` 扩展兜住工具产出的图片 |
+| ✅ 已落地 | **压缩 / 重置前的对话可回看**（`d54abe3`） | 分隔线入口 + 置顶只读归档区（分页、保持阅读位置） |
+| ✅ 已落地 | 子代理的 codemode 命名空间（`host-team` → `team`） | 1.6 起命名空间由扩展声明 |
+| ✅ 已落地 | UI 冒烟脚本 `scripts/ui-smoke.mjs` | 零依赖 CDP：页面异常 / 控制台错误 / 关键控件断言，可截图与执行 JS |
+| ⏸ 未做 | `prompts` / `skills` 资源路径（pi settings）与 `enableSkillCommands` | `/api/commands` 仍只读两个约定目录 |
+| ⏸ 未做 | 子代理工具改为 park（`SubmissionDraft.notify`） | 单会话场景收益有限 |
+| ⏸ 未做 | `HarnessOptions.readOnly`、`telemetry`、更多 pi-ai API、sqlite prefix 表迁入 | 见第三节 |
+| ⏸ 未做（有意） | `identity`（User-Agent / 归因） | 上游默认已归因到 pi；自定义 UA 对中继端点的兼容性是未知风险、无明确收益 |
+| 战略 | pi 扩展包兼容 | 本机 pi CLI 通过 `npm:pi-web-access` 具备联网能力，host 的 agent 没有；两者扩展 API 不同，是独立的大工程 |
 
 ## 五、升级 Runbook
 
