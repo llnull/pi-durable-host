@@ -24,7 +24,7 @@ node host.js ask "列出本目录结构"   # 或者直接 CLI 提问
 - **持久会话**：SQLite（WAL）存储，崩溃后 `resume()` 接续未完成的 run（包括生成中的回答）
 - **多会话**：命名会话 ↔ conversation 映射，UI/CLI 随时切换
 - **模型**：完全复用 pi 配置（自定义中继 + 凭证），UI 内跨 provider 即时切换
-- **图片输入**（pi-durable 1.2.0）：`read` 工具可直接读图片（jpg/png/gif/webp/bmp）作图片块进上下文，Photon 预处理（EXIF 纠向、缩放到模型限制，worker 线程懒加载）；`PI_DURABLE_IMAGES=0` 可关
+- **图片输入**（pi-durable 1.2.0）：`read` 工具可直接读图片（jpg/png/gif/webp/bmp）作图片块进上下文，Photon 预处理（EXIF 纠向、缩放到模型限制，worker 线程懒加载）。Web UI 粘贴/拖拽的图片在**入库前**按会话当前模型的限制解码、缩放、转码（pi-durable 1.6 `images/fit`）：坏图直接剔除并说明，回复带 `imageNotes`；模型不支持图片输入时预览条与回复都会提示。工具产出的图片（MCP、codemode 的 `image()`）同样经 `fit-images` 扩展整理。`PI_DURABLE_IMAGES=0` 可关（关闭后原样透传）
 - **codemode**：agent 可写 JS 脚本在 QuickJS 沙箱里批量调工具（嵌套调用），脚本崩溃后跨重启确定性回放。默认跟随 pi 的 `settings.json` `defaultTools`（本机 pi 开了 host 就开）；`PI_DURABLE_CODEMODE=0/1` 或 `data/host.json` 的 `features.codemode` 可覆盖（占 prompt 预算，不想用就关）
 - **会话运行策略**（pi-durable 1.4 / 1.5）：每个会话可单独设思考档位、单次 run 的工具轮数上限、压缩策略（顶栏 ⚙），和模型切换一样即时生效、持久保存、随 fork 继承；默认跟随 pi / host 设置
 - **分叉重试**：从任意提问分叉出新会话换说法重问，原会话不变
@@ -131,7 +131,7 @@ node host.js config                              # 重置存储的 cwd/model 为
 
 | 端点 | 说明 |
 |---|---|
-| `POST /api/ask` | `{ content, whenBusy?: "followUp"\|"steer"\|"reject", wait?, requestId?, session? }`；忙时排队/转向都走这里 |
+| `POST /api/ask` | `{ content, whenBusy?: "followUp"\|"steer"\|"reject", wait?, requestId?, session?, images?: [{ mimeType, data, filename? }] }`；忙时排队/转向都走这里；带图时回复附 `imageNotes`（入库前缩放 / 剔除 / 模型不支持图片的说明） |
 | `POST /api/abort` | 中止当前运行（后台任务不受影响） |
 | `POST /api/compact` | `{ instructions? }` 提交压缩任务 |
 | `POST /api/reset` | `{ note? }` 重置上下文 |

@@ -58,6 +58,8 @@
   .ap-state.waiting { background: var(--amber-bg); color: var(--amber); font-weight: 600; }
   .ap-state.ended, .ap-state.legacy { background: var(--line); color: var(--faint); font-weight: 400; }
   #cwd { max-width: 300px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } /* 长路径不再把顶栏挤成两行 */
+  .att-size { position: absolute; right: 22px; bottom: 2px; font-size: 10px; background: rgba(0,0,0,.55); color: #fff; border-radius: 6px; padding: 0 5px; }
+  .att-warn { font-size: 12px; color: var(--amber); align-self: center; }
   /* 会话设置弹层（思考档位 / 轮数上限 / 压缩策略） */
   .pfield { margin: 12px 0; }
   .pfield > label { display: block; font-weight: 600; font-size: 13px; margin-bottom: 5px; }
@@ -1356,12 +1358,20 @@ const IMAGE_MIME_OK = new Set(["image/png", "image/jpeg", "image/gif", "image/we
 const MAX_IMAGE_BASE64 = 14 * 1024 * 1024; // 与服务端一致：单图 base64 ≤ ~10MB 原始字节
 let attachments = []; // [{ mimeType, data, name }]
 
+function currentModelAcceptsImages() {
+  const agent = uiView?.docs?.["pi.agent"] ?? {};
+  const p = modelCatalog.find((x) => x.id === agent.model?.provider);
+  const m = p?.models?.find((x) => x.id === agent.model?.modelId);
+  return m ? Array.isArray(m.input) && m.input.includes("image") : true; // 目录还没取到时别拦
+}
 function renderAttachments() {
   const strip = $("attachStrip");
   strip.hidden = !attachments.length;
+  // 每张图标注大小；当前模型不支持图片输入时在预览条里直说（服务端也会入库并在回复里附说明）
+  const warn = currentModelAcceptsImages() ? "" : `<span class="att-warn" title="图片会留在会话记录里，但不会进入模型上下文；换一个支持图片的模型后再发">⚠ 当前模型不支持图片输入</span>`;
   strip.innerHTML = attachments.map((a, i) =>
-    `<span class="att"><img src="data:${esc(a.mimeType)};base64,${a.data}" alt="${esc(a.name ?? "图片")}" title="${esc(a.name ?? "图片")}"><button data-rm="${i}" title="移除">✕</button></span>`
-  ).join("");
+    `<span class="att"><img src="data:${esc(a.mimeType)};base64,${a.data}" alt="${esc(a.name ?? "图片")}" title="${esc(a.name ?? "图片")}"><span class="att-size">${(a.data.length * 0.75 / 1024).toFixed(0)}KB</span><button data-rm="${i}" title="移除">✕</button></span>`
+  ).join("") + warn;
 }
 
 async function addImageFiles(files) {
@@ -1440,11 +1450,12 @@ async function send(whenBusy) {
     ? lastFailedSend.requestId
     : `ui-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   try {
-    await api("/api/ask", {
+    const r = await api("/api/ask", {
       method: "POST",
       timeoutMs: 30_000, // 不设超时时：daemon 忙/线路挂起 → fetch 永不返回 → 按钮永久禁用，只能刷新页面
       body: JSON.stringify({ content, whenBusy, requestId, ...(pendingImages.length ? { images: pendingImages.map(({ mimeType, data, name }) => ({ mimeType, data, filename: name ?? undefined })) } : {}) }),
     });
+    if (r?.imageNotes?.length) toast(`图片已整理：${r.imageNotes.join("；")}`, "info"); // 入库前的缩放 / 转码 / 剔除说明（pi-durable images/fit）
     input.value = ""; input.style.height = "auto";
     attachments = []; renderAttachments(); // 已随消息入库，清空预览条
     lastSent = typed; localStorage.removeItem(DRAFT_KEY); updateCount();
